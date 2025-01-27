@@ -1,0 +1,91 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-server
+    env_file:
+      - mysql.env
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: redis-server
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./crypto_data_collector
+      dockerfile: dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build:
+      context: ./crypto_data_collector
+      dockerfile: dockerfile
+    command: celery -A app.tasks worker --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+
+  celery-beat:
+    build:
+      context: ./crypto_data_collector
+      dockerfile: dockerfile
+    command: celery -A app.tasks beat --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  kraken_service:
+    build:
+      context: ./kraken_service
+      dockerfile: dockerfile
+    ports:
+      - "9000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-beat-kraken:
+    build:
+      context: ./kraken_service
+      dockerfile: Dockerfile
+    command: celery -A app.tasks beat --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+  
+  kraken-worker:
+    build:
+      context: ./kraken_service
+      dockerfile: Dockerfile
+    command: celery -A app.tasks worker --loglevel=info --queues=kraken_queue
+    depends_on:
+      redis:
+        condition: service_healthy
