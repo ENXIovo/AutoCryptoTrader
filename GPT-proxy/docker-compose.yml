@@ -1,0 +1,28 @@
+services:
+  gpt-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+      args:
+        BASE_IMAGE: gpt-proxy-base
+    ports:
+      - "8200:8000"
+    env_file:
+      - .env.dev
+    depends_on:
+      redis:
+        condition: service_healthy
+  
+  redis:
+    image: redis:alpine
+    container_name: redis-gpt
+    command: redis-server --appendonly yes --requirepass Kongbai1213
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "Kongbai1213", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

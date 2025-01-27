@@ -1,0 +1,13 @@
+fastapi
+sqlalchemy
+pydantic
+pydantic_settings
+requests
+uvicorn
+pandas
+celery[redis]
+celery[celery-beat]
+pymysql
+tenacity
+cryptography
+redis
