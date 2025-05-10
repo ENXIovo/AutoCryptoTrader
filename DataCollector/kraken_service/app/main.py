@@ -99,3 +99,4 @@ def get_filtered_kraken_data(symbol: str = Query(..., description="例如：DOGE
     except Exception as e:
         # 捕获在 tasks.py 中发生的异常，并返回 HTTP 错误
         raise HTTPException(status_code=500, detail=str(e))
+
