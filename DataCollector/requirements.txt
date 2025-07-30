@@ -11,3 +11,4 @@ pymysql
 tenacity
 cryptography
 redis
+telethon
