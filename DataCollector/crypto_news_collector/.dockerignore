@@ -1,0 +1,26 @@
+# 忽略 Python 缓存和虚拟环境
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# 忽略 Git 文件夹
+.git/
+.gitignore
+
+# 忽略日志和数据库数据
+*.log
+*.sql
+*.sqlite
+/data/
+logs/
+
+# 忽略 IDE 配置文件
+.vscode/
+.idea/
+*.iml
+
+# 忽略大文件或测试文件
+data/

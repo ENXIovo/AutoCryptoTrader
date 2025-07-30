@@ -89,3 +89,28 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  newscollector-web:
+    build:
+      context: ./crypto_news_collector
+      dockerfile: dockerfile
+    ports:
+      - "8300:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  newscollector-listener:
+    build:
+      context: ./crypto_news_collector
+      dockerfile: dockerfile
+    command: python -m app.telegram_listener
+    container_name: newscollector-listener
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
