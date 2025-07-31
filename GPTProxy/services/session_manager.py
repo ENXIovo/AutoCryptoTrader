@@ -12,7 +12,6 @@ class SessionManager:
         self,
         system_message: str,
         context_length: int,
-        temperature: float,
         current_model: str,
     ) -> ChatSession:
         """Helper method to create a new ChatSession."""
@@ -20,7 +19,6 @@ class SessionManager:
             return ChatSession(
                 system_message=ChatMessage(role="system", content=system_message),
                 context_length=context_length,
-                temperature=temperature,
                 current_model=current_model,
             )
         except ValidationError as e:
@@ -51,14 +49,12 @@ class SessionManager:
         new_message = ChatMessage(role=role, content=prompt)
         session.add_message(new_message)
 
-    def update_session(self, session: ChatSession, system_message: str, context_length: int, temperature: float, current_model: str):
+    def update_session(self, session: ChatSession, system_message: str, context_length: int, current_model: str):
         try:
             if session.system_message != system_message:
                 session.update_system_message(system_message)
             if session.context_length != context_length:
                 session.context_length = context_length
-            if session.temperature != temperature:
-                session.temperature = temperature
             if session.current_model != current_model:
                 session.current_model = current_model
         except ValidationError as e:

@@ -3,11 +3,10 @@ import datetime
 
 from uuid import uuid4
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Dict, Optional
 from config import (
     DEFAULT_DEPLOYMENT_NAME,
     DEFAULT_CONTEXT_LENGTH,
-    DEFAULT_TEMPERATURE,
     DEFAULT_SYSTEM_MESSAGE,
 )
 
@@ -17,9 +16,10 @@ class MessageRequest(BaseModel):
     session_id: Optional[str] = None
     system_message: Optional[str] = None
     context_length: Optional[int] = None
-    temperature: Optional[float] = None
     deployment_name: Optional[str] = None
     stream: Optional[bool] = False
+    tools: Optional[List[Dict]] = None
+    tool_choice: Optional[str] = "auto"
 
 
 # 自定义的错误响应模型
@@ -53,7 +53,7 @@ class ChatSession(BaseModel):
         ge=0,
         error_messages={"ge": "context_length must be a non-negative integer"},
     )
-    temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0, le=1)
+    tool_config: dict = Field(default_factory=dict)
 
     def __init__(self, **data):
         super().__init__(**data)

@@ -1,6 +1,6 @@
 # api_manager_factory.py
 from apis.openai_api import OpenAIAPI
-from openai import OpenAI
+from openai import AsyncOpenAI
 from config import ENDPOINT_CONFIGS
 
 # from api.bard_api import BardAPIManager
@@ -12,7 +12,7 @@ class APIManagerFactory:
     @staticmethod
     def initialize_clients():
         for group, config in ENDPOINT_CONFIGS.items():
-            client = OpenAI(
+            client = AsyncOpenAI(
                 api_key=config["api_key"]
             )
             # 为这个端点组的所有模型分配同一个客户端实例
