@@ -3,7 +3,7 @@ import datetime
 
 from uuid import uuid4
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from config import (
     DEFAULT_DEPLOYMENT_NAME,
     DEFAULT_CONTEXT_LENGTH,
@@ -12,7 +12,7 @@ from config import (
 
 
 class MessageRequest(BaseModel):
-    message: str
+    message: Optional[str] = None
     session_id: Optional[str] = None
     system_message: Optional[str] = None
     context_length: Optional[int] = None
@@ -20,7 +20,8 @@ class MessageRequest(BaseModel):
     stream: Optional[bool] = False
     tools: Optional[List[Dict]] = None
     tool_choice: Optional[str] = "auto"
-
+    previous_response_id: Optional[str] = None
+    input: Optional[List[Dict[str, Any]]] = None
 
 # 自定义的错误响应模型
 class ErrorResponse(BaseModel):

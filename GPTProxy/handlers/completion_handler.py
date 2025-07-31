@@ -34,9 +34,11 @@ async def handle_user_message(request, user, session_manager: SessionManager):
     )
     
     return {
-        "session_id": session.session_id, 
+        "session_id": session.session_id,
+        "response_id": merged_response["response_data"]["response_id"],
         "content": merged_response["ai_message"],
         "tool_calls": merged_response["tool_calls"],
+        "response_data": merged_response["response_data"], 
     }
 
 
@@ -139,6 +141,11 @@ async def prepare_session(request, user, session_manager: SessionManager):
             "tools": request["tools"],
             "tool_choice": request.get("tool_choice", "auto"),
         }
+        
+    if request.get("previous_response_id") is not None:
+        session.tool_config["previous_response_id"] = request["previous_response_id"]
+    if request.get("input") is not None:
+        session.tool_config["input"] = request["input"]
 
     session_manager.add_message_to_session("user", session, request.get("message"))
 

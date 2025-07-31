@@ -1,24 +1,25 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from app.models import MarketRequest, GPTResponse
-from app.services import execute_analysis
+from .config import settings
+from .models import MessageRequest, MessageResponse
+from .gpt_client import GPTClient
+from .tool_handlers import TOOL_HANDLERS
+from .tool_schemas import TOOL_SCHEMAS
+from .scheduler import Scheduler
 
 app = FastAPI()
 
+# 实例化依赖
+gpt_client  = GPTClient(base_url=settings.gpt_proxy_url)
+scheduler   = Scheduler(
+    gpt_client    = gpt_client,
+    tool_handlers = TOOL_HANDLERS,
+    tool_schemas  = TOOL_SCHEMAS,
+)
 
-@app.post("/analyze-gpt", response_model=GPTResponse)
-def analyze_gpt(request: MarketRequest):
+@app.post("/analyze-gpt", response_model=MessageResponse)
+def analyze_gpt(req: MessageRequest):
     try:
-        result = execute_analysis(symbol=request.symbol, analysis_mode=request.mode)
-        return GPTResponse(message=result)
+        raw = scheduler.analyze(req)
+        return MessageResponse(**raw)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.post("/analyze-gpt-stream", response_class=StreamingResponse)
-# def analyze_gpt_stream(request: MarketRequest):
-#     try:
-#         result = execute_analysis(symbol=request.symbol)
-#         return StreamingResponse(result, media_type="text/plain")
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
