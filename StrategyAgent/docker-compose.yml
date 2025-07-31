@@ -2,7 +2,7 @@ services:
   auto-crypto-trade:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
       args:
         BASE_IMAGE: auto-crypto-base
     container_name: auto-crypto-trade

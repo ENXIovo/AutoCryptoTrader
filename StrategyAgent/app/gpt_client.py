@@ -1,25 +1,23 @@
 import requests
-from app.models import MessageRequest
+from pydantic import ValidationError
+from .models import MessageRequest, MessageResponse
 
 class GPTClient:
-    BASE_URL =  "http://host.docker.internal:8200/api/v1/generate-response"
-    # BASE_URL = "http://localhost:8200/api/v1/generate-response"
+    """
+    仅负责跟 GPT-Proxy HTTP 通信
+    """
+    def __init__(self, base_url: str):
+        self.base_url = base_url
 
-    @staticmethod
-    def send_message(request: MessageRequest):
-        """
-        Sends a message to the GPT API and retrieves the response.
-
-        :param request: MessageRequest object containing the message payload.
-        :return: JSON response from the GPT API.
-        :raises RuntimeError: If the request fails.
-        """
-        payload = request.to_payload()
+    def send_message(self, req: MessageRequest) -> MessageResponse:
+        payload = req.to_payload()
         try:
-            response = requests.post(
-                GPTClient.BASE_URL, json=payload, timeout=600
-            )  # Make the API request
-            response.raise_for_status()  # Raise an error for HTTP codes >= 400
-            return response.json()  # Return the JSON response
+            resp = requests.post(self.base_url, json=payload, timeout=600)
+            resp.raise_for_status()
+            data = resp.json()
+            # 校验并解析成强类型 MessageResponse
+            return MessageResponse(**data)
         except requests.RequestException as e:
             raise RuntimeError(f"GPT request failed: {e}")
+        except ValidationError as ve:
+            raise RuntimeError(f"Invalid GPT-Proxy response format: {ve}")

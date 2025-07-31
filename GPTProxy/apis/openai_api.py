@@ -37,6 +37,15 @@ class OpenAIAPI(APIManager):
             data["tools"] = session.tool_config["tools"]
             data["tool_choice"] = session.tool_config.get("tool_choice", "auto")
         print(data)
+
+        if session.tool_config.get("previous_response_id"):
+            data["previous_response_id"] = session.tool_config["previous_response_id"]
+
+        # function_call_output 回传
+        if session.tool_config.get("input"):
+            # 直接把前端给的 list（含 type,function_call_output）拼到 input 里
+            data["input"] += session.tool_config["input"]
+
         return data
 
     def format_input_messages(
@@ -57,8 +66,9 @@ class OpenAIAPI(APIManager):
                 "response_data": {
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
-                    "created_at": response.created_at.timestamp(),
+                    "created_at": response.created_at,
                     "received_at": int(datetime.datetime.now().timestamp()),
+                    "response_id": response.id
                 },
             }
 
@@ -85,6 +95,7 @@ class OpenAIAPI(APIManager):
                 "completion_tokens": response.usage.output_tokens,
                 "created_at": response.created_at,
                 "received_at": int(datetime.datetime.now().timestamp()),
+                "response_id": response.id
             },
         }
 
