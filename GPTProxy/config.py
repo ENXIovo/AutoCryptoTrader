@@ -38,8 +38,6 @@ Configuration Details:
      Example: "You are a helpful assistant."
    - `DEFAULT_CONTEXT_LENGTH` (int): Default context length for chat sessions.
      Example: 12
-   - `DEFAULT_TEMPERATURE` (float): Default temperature setting for response generation.
-     Example: 0.7
 
 5. **Input Fields Configuration**:
    - `DEFAULT_INPUT_FIELDS` (set): Default input fields for handling messages.
@@ -95,6 +93,9 @@ import os
 # "gpt-4-0125-Preview"
 # "gpt-4-turbo-2024-04-09"
 # "gpt-4o-2024-05-13"
+# "gpt-4o-2024-11-20"
+# "gpt-4.1-2025-04-14"
+# "o3-2025-04-16"
 DEFAULT_DEPLOYMENT_NAME = "gpt-4o-2024-11-20"
 
 # OpenAI API Configuration
@@ -103,7 +104,7 @@ OPENAI_API_VERSION = "2024-02-01"
 ENDPOINT_CONFIGS = {
     "OPENAI": {
         "api_key": os.getenv("OPENAI_API_KEY"),
-        "models": ["gpt-4o-2024-11-20"],
+        "models": ["gpt-4o-2024-11-20", "o3-2025-04-16"],
     }
 }
 

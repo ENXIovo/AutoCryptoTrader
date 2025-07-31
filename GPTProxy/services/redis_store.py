@@ -50,7 +50,7 @@ class RedisStore:
     async def save_session_info(self, session):
         try:
             session_info_key = f"session:info:{session.session_id}"
-            session_info = session.model_dump(include={"session_id", "created_at", "current_model", "context_length", "temperature"})
+            session_info = session.model_dump(include={"session_id", "created_at", "current_model", "context_length"})
             session_info = {k: v.isoformat() if isinstance(v, datetime) else v for k, v in session_info.items()}
             await self.redis_client.hset(session_info_key, mapping=session_info)
         except Exception as e:

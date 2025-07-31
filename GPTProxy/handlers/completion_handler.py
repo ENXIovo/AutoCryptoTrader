@@ -19,7 +19,7 @@ async def handle_user_message(request, user, session_manager: SessionManager):
 
     # 调用 API 生成并添加助手消息
     api_manager = APIManagerFactory.get_api_manager(session.current_model)
-    merged_response = api_manager.generate_response(session)
+    merged_response = await api_manager.generate_response(session)
 
     merged_response["response_data"]["username"] = user
     merged_response["response_data"]["model"] = session.current_model
@@ -46,7 +46,7 @@ async def handle_user_message_stream(request, user, session_manager: SessionMana
     stream_generator = api_manager.generate_response_stream(session)
 
     content_buffer = []
-    for chunk in stream_generator:
+    async for chunk in stream_generator: 
         content_buffer.append(chunk)
         yield chunk
 
@@ -57,7 +57,7 @@ async def handle_user_message_stream(request, user, session_manager: SessionMana
     full_response = "".join(content_buffer)
     prompt_tokens = encoder.encode(
         "".join(
-            [msg["content"] for msg in api_manager.prepare_request(session)["messages"]]
+            [msg["content"] for msg in api_manager.prepare_request(session)["input"]]
         )
     )
     completion_tokens = encoder.encode(full_response)
@@ -92,7 +92,6 @@ async def prepare_session(request, user, session_manager: SessionManager):
 
     system_message = request.get("system_message")
     context_length = request.get("context_length")
-    temperature = request.get("temperature")
     current_model = request.get("deployment_name")
 
     if system_message is None:
@@ -105,27 +104,27 @@ async def prepare_session(request, user, session_manager: SessionManager):
             context_length = session.context_length
         else:
             context_length = DEFAULT_CONTEXT_LENGTH
-    if temperature is None:
-        if session:
-            temperature = session.temperature
-        else:
-            temperature = DEFAULT_TEMPERATURE
     if current_model is None:
         if session:
             current_model = session.current_model
         else:
             current_model = DEFAULT_DEPLOYMENT_NAME
-
+    
     if not session:
         session = session_manager.create_new_session(
-            system_message, context_length, temperature, current_model
+            system_message, context_length, current_model
         )
     else:
         session_manager.update_session(
-            session, system_message, context_length, temperature, current_model
+            session, system_message, context_length, current_model
         )
 
-    # 添加用户消息并保存会话
+    if request.get("tools") is not None:
+        session.tool_config = {
+            "tools": request["tools"],
+            "tool_choice": request.get("tool_choice", "auto"),
+        }
+
     session_manager.add_message_to_session("user", session, request.get("message"))
 
     return session
