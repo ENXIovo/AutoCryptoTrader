@@ -111,7 +111,6 @@ ENDPOINT_CONFIGS = {
 # Chat Session Configuration
 DEFAULT_SYSTEM_MESSAGE = "You are a helpful assistant."
 DEFAULT_CONTEXT_LENGTH = 12
-DEFAULT_TEMPERATURE = 0.7
 
 # Input Fields Configuration
 DEFAULT_INPUT_FIELDS = {"role", "content"}

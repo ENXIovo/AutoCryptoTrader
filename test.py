@@ -17,7 +17,7 @@ HEADERS = {"Content-Type": "application/json"}
 async def non_stream_test():
     """同步方式：一次性返回完整 JSON"""
     payload = {
-        "message": "帮我总结一下今天比特币的大新闻",
+        "message": "当前波士顿天气",
         "tools": [{"type": "web_search_preview"}],   # 无工具就删掉此行
         "stream": False,
     }
@@ -46,5 +46,5 @@ async def stream_test():
 
 
 if __name__ == "__main__":
-    asyncio.run(non_stream_test())
-    # asyncio.run(stream_test())
+    # asyncio.run(non_stream_test())
+    asyncio.run(stream_test())

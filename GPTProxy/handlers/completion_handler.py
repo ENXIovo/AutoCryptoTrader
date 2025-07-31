@@ -8,7 +8,6 @@ from apis.api_manager_factory import APIManagerFactory
 from config import (
     DEFAULT_SYSTEM_MESSAGE,
     DEFAULT_CONTEXT_LENGTH,
-    DEFAULT_TEMPERATURE,
     DEFAULT_DEPLOYMENT_NAME,
 )
 
@@ -33,8 +32,12 @@ async def handle_user_message(request, user, session_manager: SessionManager):
         session_manager.save_session(session),
         session_manager.save_billing_data(merged_response["response_data"]),
     )
-
-    return {"session_id": session.session_id, "content": merged_response["ai_message"]}
+    
+    return {
+        "session_id": session.session_id, 
+        "content": merged_response["ai_message"],
+        "tool_calls": merged_response["tool_calls"],
+    }
 
 
 async def handle_user_message_stream(request, user, session_manager: SessionManager):
@@ -46,12 +49,24 @@ async def handle_user_message_stream(request, user, session_manager: SessionMana
     stream_generator = api_manager.generate_response_stream(session)
 
     content_buffer = []
-    async for chunk in stream_generator: 
-        content_buffer.append(chunk)
-        yield chunk
+    tool_calls = []
+    
+    try:
+        async for chunk in stream_generator:
+            if isinstance(chunk, dict) and chunk.get("type") == "text":
+                content_buffer.append(chunk["delta"])
+                yield chunk["delta"]
 
-    # 初始化 tiktoken 编码器
-    encoder = tiktoken.encoding_for_model(session.current_model)
+            elif isinstance(chunk, dict) and chunk.get("type") == "tool_call":
+                tool_calls.append(chunk["call"])
+    except Exception as e:
+        yield f"[Stream aborted due to error: {str(e)}]"
+        
+    # Token 计算
+    try:
+        encoder = tiktoken.encoding_for_model(session.current_model)
+    except Exception:
+        encoder = tiktoken.get_encoding("cl100k_base") 
 
     # 获取完整响应内容以便后续保存
     full_response = "".join(content_buffer)
@@ -65,19 +80,19 @@ async def handle_user_message_stream(request, user, session_manager: SessionMana
 
     merged_response = {
         "ai_message": full_response,
+        "tool_calls": tool_calls,
         "response_data": {
             "prompt_tokens": len(prompt_tokens),
             "completion_tokens": len(completion_tokens),
             "created_at": int(session.created_at.timestamp()),
             "received_at": received_at,
+            "username": user,
+            "model": session.current_model,
         },
     }
 
     # 更新和保存会话
     session_manager.add_message_to_session("assistant", session, full_response)
-
-    merged_response["response_data"]["username"] = user
-    merged_response["response_data"]["model"] = session.current_model
 
     await asyncio.gather(
         session_manager.save_session(session),
