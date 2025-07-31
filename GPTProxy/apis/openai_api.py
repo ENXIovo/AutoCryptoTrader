@@ -50,32 +50,44 @@ class OpenAIAPI(APIManager):
         ]
 
     def handle_response(self, response):
-        ai_message = getattr(response, "output_text", "")
-        tool_calls = [item for item in response.output if item.type.endswith("_call")]
-        
-        if tool_calls:
-            print(f"本次响应共调用 {len(tool_calls)} 次工具：")
-            for call in tool_calls:
-                print(" -", call.type, call)
-
         if response.status == "failed" and response.error.get("code") == "content_filter":
-            response_content = "Content was filtered due to inappropriate content. Please try again with different content."
-        else:
-            response_content = ai_message
+            return {
+                "ai_message": "Content was filtered due to inappropriate content. Please try again with different content.",
+                "tool_calls": [],
+                "response_data": {
+                    "prompt_tokens": response.usage.prompt_tokens,
+                    "completion_tokens": response.usage.completion_tokens,
+                    "created_at": response.created_at.timestamp(),
+                    "received_at": int(datetime.datetime.now().timestamp()),
+                },
+            }
 
-        prompt_tokens = response.usage.input_tokens
-        completion_tokens = response.usage.output_tokens
-        received_at = int(datetime.datetime.now().timestamp())
+        # 解析工具调用（统一格式）
+        tool_calls = [
+            item.model_dump()
+            for item in response.output
+            if item.type.endswith("_call")
+        ]
+
+        # 聚合 message 内容
+        ai_message = ""
+        for item in response.output:
+            if item.type == "message":
+                for part in item.content:
+                    if part.type == "output_text":
+                        ai_message += part.text
 
         return {
-            "ai_message": response_content,
+            "ai_message": ai_message,
+            "tool_calls": tool_calls,
             "response_data": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
                 "created_at": response.created_at,
-                "received_at": received_at,
+                "received_at": int(datetime.datetime.now().timestamp()),
             },
         }
+
 
     async def generate_response(self, session: ChatSession):
         """
@@ -108,25 +120,47 @@ class OpenAIAPI(APIManager):
         status_code, detail_prefix = error_mapping.get(type(e), (status.HTTP_500_INTERNAL_SERVER_ERROR, "Unexpected error: "))
         raise HTTPException(status_code=status_code, detail=f"{detail_prefix}{str(e)}")
 
-    async def handle_stream_response(self, response) -> AsyncGenerator[str, None]:
+    async def handle_stream_response(self, response) -> AsyncGenerator[dict, None]:
         """
-        Handle the streamed response from the OpenAI API.
+        流式响应处理器，兼容文本 + function_call 的 tool calling。
+        遵循 OpenAI 官方推荐的 event-based 聚合逻辑。
         """
-        async for chunk in response:
-            if chunk.type.endswith("_call"):
-                print("[TOOL]", chunk.type, "args/output:", chunk)
-            
-            # 实时文本增量 —— 适用于 gpt-4o、gpt-4.1 等主力模型
-            elif chunk.type == "response.output_text.delta":
-                yield chunk.delta
+        ai_text = ""
+        final_tool_calls = {}  # output_index -> tool_call
+        current_args = {}      # output_index -> str (arguments accumulating)
 
-            # 少数模型（Deep-Research）仅把最终文本放在 completed
-            elif chunk.type == "response.completed":
-                for item in chunk.response.output:
+        async for event in response:
+            # 文本 delta
+            if event.type == "response.output_text.delta":
+                ai_text += event.delta
+                yield {"type": "text", "delta": event.delta}
+
+            # 工具调用初始化
+            elif event.type == "response.output_item.added" and event.item.type.endswith("_call"):
+                final_tool_calls[event.output_index] = event.item
+                current_args[event.output_index] = ""
+
+            # 工具调用参数累积
+            elif event.type == "response.function_call_arguments.delta":
+                index = event.output_index
+                if index in final_tool_calls:
+                    current_args[index] += event.delta
+
+            # 工具调用完成（一次 tool 调用完整组装好）
+            elif event.type == "response.function_call_arguments.done":
+                index = event.output_index
+                tool_call = final_tool_calls[index]
+                tool_call.arguments = current_args[index]
+                yield {"type": "tool_call", "call": tool_call.model_dump()}
+
+            # 最终收尾 + 补充 delta
+            elif event.type == "response.completed":
+                for item in event.response.output:
                     if item.type == "message":
                         for part in item.content:
                             if part.type == "output_text":
-                                yield part.text
+                                ai_text += part.text
+                                yield {"type": "text", "delta": part.text}
 
     async def generate_response_stream(self, session: ChatSession) -> AsyncGenerator[str, None]:
         """
