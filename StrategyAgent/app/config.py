@@ -6,7 +6,10 @@ class Settings(BaseSettings):
     gpt_proxy_url: str = Field(..., env="GPT_PROXY_URL")
     # CryptoNewsCollector 服务地址
     news_service_url: str = Field(..., env="NEWS_SERVICE_URL")
-    # 可以继续增加：order_service_url, wallet_service_url, api_key_xyz, ...
+    # KrakenService 服务地址，用于账户余额、挂单等查询
+    kraken_service_url: str = Field(..., env="KRAKEN_SERVICE_URL")
+    # DataCollector 服务地址，用于获取行情及技术指标
+    data_service_url: str = Field(..., env="DATA_SERVICE_URL")
 
     class Config:
         env_file = ".env"          # 支持从 .env 文件读取

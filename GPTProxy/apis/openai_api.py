@@ -86,7 +86,9 @@ class OpenAIAPI(APIManager):
                 for part in item.content:
                     if part.type == "output_text":
                         ai_message += part.text
-
+                        
+        print(f"[Response result] ai_message: {ai_message}, tool_calls: {tool_calls}")
+        
         return {
             "ai_message": ai_message,
             "tool_calls": tool_calls,
