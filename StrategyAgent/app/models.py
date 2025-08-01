@@ -28,23 +28,6 @@ class MessageRequest(BaseModel):
         # 排除 None 字段，Pydantic v2 用 model_dump
         return self.model_dump(exclude_none=True)
 
-
-class ToolCall(BaseModel):
-    """
-    GPT-Proxy 返回的工具调用结构：
-    - id, call_id: 用于追踪调用
-    - name: 函数名或工具名
-    - arguments: 传给工具的 JSON 字符串
-    - type, status: 可选字段，兼容内置调用
-    """
-    id: str
-    call_id: str
-    name: str
-    arguments: str
-    type: Optional[str] = None
-    status: Optional[str] = None
-
-
 class ResponseData(BaseModel):
     """
     GPT-Proxy 返回的计费/元数据：
@@ -69,5 +52,5 @@ class MessageResponse(BaseModel):
     session_id: str
     response_id: Optional[str] = None
     content: Optional[str] = None
-    tool_calls: Optional[List[ToolCall]] = []
+    tool_calls: Optional[List[dict]] = []
     response_data: Optional[ResponseData] = None

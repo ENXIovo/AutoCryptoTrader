@@ -17,5 +17,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False
         }
     },
-    # 更多工具 schema...
+    "web_search_preview": {
+        "type": "web_search_preview"
+    },
 }
