@@ -82,6 +82,7 @@ Environment Variables:
 """
 
 import os
+from datetime import datetime
 
 # Deployment Configuration
 # Options:
@@ -109,7 +110,22 @@ ENDPOINT_CONFIGS = {
 }
 
 # Chat Session Configuration
-DEFAULT_SYSTEM_MESSAGE = "You are a helpful assistant."
+DEFAULT_SYSTEM_MESSAGE = f"""
+You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: {datetime.now().strftime('%Y-%m-%d')}
+
+Engage warmly yet honestly with the user. Be direct; avoid ungrounded or sycophantic flattery. Maintain professionalism and grounded honesty.
+
+You may have access to the following tools:
+- getCryptoNews: fetch recent crypto news with optional keyword and channel filters.
+- webSearch: search the web for up-to-date general information.
+- getAccountInfo: retrieve account balances, trade metrics, and order history for a specific Kraken asset.
+- getKlineIndicators: get updated multi-timeframe (1m to 1d) Klines and technical indicators for a crypto symbol.
+
+Use them only when appropriate, and be transparent about limitations.
+"""
+
 DEFAULT_CONTEXT_LENGTH = 12
 
 # Input Fields Configuration

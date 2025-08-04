@@ -19,3 +19,18 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 settings = Settings()
+
+
+PAIR_MAPPING = {
+    "XBTUSD": ("XXBT", "ZUSD"),   # BTC/USD
+    "ETHUSD": ("XETH", "ZUSD"),   # ETH/USD
+    "XBTUSDT": ("XXBT", "USDT"),  # BTC / USDT
+    "SOLUSD": ("SOL",  "ZUSD"),
+    # 往下随时追加： "PAIRSYM": ("BASE_ASSET_CODE", "QUOTE_ASSET_CODE")
+}
+
+QUOTE_PRIORITY = ["ZUSD", "USDT", "ZEUR", "EUR", "ZCAD", "CAD"]
+
+TRADE_HISTORY_LOOKBACK_DAYS = 7
+
+LOCAL_TZ = "America/New_York"

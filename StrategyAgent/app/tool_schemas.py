@@ -2,9 +2,9 @@ from typing import Dict, Any
 
 # 函数 schema 给 GPT-Proxy 使用
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
-    "latest_news": {
+    "getCryptoNews": {
         "type": "function",
-        "name": "latest_news",
+        "name": "getCryptoNews",
         "description": "Fetch the latest crypto news events",
         "parameters": {
             "type": "object",
@@ -20,10 +20,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "web_search_preview": {
         "type": "web_search_preview"
     },
-    "kraken_filter": {
+    "getAccountInfo": {
         "type": "function",
-        "name": "kraken_filter",
-        "description": "获取账户中特定币种的余额、挂单和可交易金额等信息",
+        "name": "getAccountInfo",
+        "description": "查询账户中与指定币种相关的资产信息，包括账户余额、全局交易资金信息（如保证金、估值、未实现盈亏）、该币种相关的交易历史记录，以及所有挂单",
         "parameters": {
             "type": "object",
             "properties": {
@@ -36,16 +36,16 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    "gpt_latest": {
+    "getKlineIndicators": {
         "type": "function",
-        "name": "gpt_latest",
-        "description": "获取某币种最近一分钟内的K线数据及技术指标（MACD、RSI、SMA、布林带等）",
+        "name": "getKlineIndicators",
+        "description": "获取某币种在最近一分钟内更新的多周期（1m、5m、15m、1h、4h、1d）K线数据及其技术指标（包括 MACD、RSI、SMA、布林带等）",
         "parameters": {
             "type": "object",
             "properties": {
                 "symbol": {
                     "type": "string",
-                    "description": "币种符号，例如 DOGE, ETH, BTC, TRUMP 等",
+                    "description": "kraken平台支持的交易对，例如 DOGEUSD, ETHUSD, BTCUSD, TRUMPUSD 等",
                 },
             },
             "required": ["symbol"],
