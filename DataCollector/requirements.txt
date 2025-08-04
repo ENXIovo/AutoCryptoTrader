@@ -12,3 +12,4 @@ tenacity
 cryptography
 redis
 telethon
+humanize

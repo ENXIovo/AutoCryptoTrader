@@ -1,4 +1,4 @@
-from .tool_router import ToolRouter
+from .tool_router import NewsClient, KrakenClient, DataClient
 from .config import settings
 
 """
@@ -10,12 +10,14 @@ DataCollector 的 ``/gpt-latest/{symbol}`` 端点。
 """
 
 # 实例化路由器
-news_router = ToolRouter(base_url=settings.news_service_url)
+news_client = NewsClient(settings.news_service_url)
+kraken_client = KrakenClient(settings.kraken_service_url)
+data_client = DataClient(settings.data_service_url)
 
-# 将工具名映射到具体执行函数
 TOOL_HANDLERS = {
-    "latest_news": news_router.latest_news,
-    "kraken_filter": news_router.kraken_filter,
-    "gpt_latest": news_router.gpt_latest,
+    "getCryptoNews": news_client.getCryptoNews,
+    "getAccountInfo": kraken_client.getAccountInfo,
+    "getKlineIndicators": data_client.getKlineIndicators,
+    # 以后再新增其它工具，只需在这里扩展映射
     # 以后可继续添加其他工具
 }

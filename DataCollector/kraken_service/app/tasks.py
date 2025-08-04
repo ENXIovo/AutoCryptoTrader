@@ -8,10 +8,21 @@ import urllib.parse
 import requests
 import redis
 import json
+import humanize
+
+from decimal import Decimal, ROUND_DOWN
 from celery import Celery
 from celery.schedules import crontab
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from app.config import settings, PAIR_MAPPING, QUOTE_PRIORITY, TRADE_HISTORY_LOOKBACK_DAYS, LOCAL_TZ
 
-from app.config import settings
+DEC = lambda x: Decimal(str(x))           # 简化写法
+FMT = lambda d, q=8: str(d.quantize(Decimal(1) / (10 ** q), ROUND_DOWN))
+
+UTC   = timezone.utc
+
+cutoff_ts = time.time() - TRADE_HISTORY_LOOKBACK_DAYS * 86400
 
 # ================== 初始化 Redis ==================
 redis_client = redis.Redis(
@@ -108,23 +119,35 @@ def get_asset_pairs():
     return data
 
 def format_open_orders(raw_open_orders):
-    orders = raw_open_orders.get('result', {}).get('open', {})
+    orders = raw_open_orders.get("result", {}).get("open", {})
     formatted_orders = {}
-    for order_id, details in orders.items():
-        pair = details['descr']['pair']
-        if pair not in formatted_orders:
-            formatted_orders[pair] = []
-        formatted_orders[pair].append({
-            "order_id": order_id,
-            "pair": details['descr']['pair'],
-            "type": details['descr']['type'],
-            "ordertype": details['descr']['ordertype'],
-            "price": details['descr']['price'],
-            "vol": details['vol'],
-            "vol_exec": details['vol_exec'],
-            "status": details['status'],
-            "opentm": int(details['opentm'])
-        })
+
+    for order_id, d in orders.items():
+        pair = d["descr"]["pair"]
+        formatted_orders.setdefault(pair, [])
+
+        # ── 时间处理 ───────────────────────────────
+        opentm_dt_utc   = datetime.fromtimestamp(int(d["opentm"]), tz=UTC)
+        age_str         = humanize.naturaldelta(datetime.now(tz=UTC) - opentm_dt_utc)
+
+        order_obj = {
+            "order_id":   order_id,
+            "pair":       pair,
+            "type":       d["descr"]["type"],
+            "ordertype":  d["descr"]["ordertype"],
+            "price":      d["descr"]["price"],
+            "vol":        d["vol"],
+            "vol_exec":   d["vol_exec"],
+            "status":     d["status"],
+
+            # ── 时间字段 ──
+            "opentm_iso_utc":   opentm_dt_utc.isoformat().replace("+00:00", "Z"),
+            "opentm_iso_local": opentm_dt_utc.astimezone(ZoneInfo(LOCAL_TZ)).isoformat(),
+            "age":              age_str
+        }
+
+        formatted_orders[pair].append(order_obj)
+
     return formatted_orders
 
 
@@ -132,29 +155,80 @@ def format_account_balance(raw_balance):
     return raw_balance.get('result', {})
 
 def format_trade_history(raw_trade_history):
-    trades = raw_trade_history.get('result', {}).get('trades', {})
+    trades_all = raw_trade_history.get("result", {}).get("trades", {})
     formatted_trades = {}
-    for trade_id, details in trades.items():
-        pair = details.get("pair", "unknown")
-        if pair not in formatted_trades:
-            formatted_trades[pair] = []
-        
+
+    cutoff_ts = time.time() - TRADE_HISTORY_LOOKBACK_DAYS * 86_400
+
+    for trade_id, d in trades_all.items():
+        if d["time"] < cutoff_ts:                   # 超过 N 天直接跳过
+            continue
+
+        pair = d.get("pair", "unknown")
+        formatted_trades.setdefault(pair, [])
+
         formatted_trades[pair].append({
-            "trade_id": trade_id,
-            "ordertxid": details.get("ordertxid"),
-            "time": int(details.get("time", 0)),
-            "type": details.get("type"),
-            "ordertype": details.get("ordertype"),
-            "price": details.get("price"),
-            "vol": details.get("vol"),
-            "cost": details.get("cost"),
-            "fee": details.get("fee"),
-            "margin": details.get("margin"),
-            "misc": details.get("misc"),
+            "trade_id":   trade_id,
+            "ordertxid":  d.get("ordertxid"),
+            "time_iso_utc":   datetime.fromtimestamp(int(d["time"]), tz=UTC)
+                               .isoformat().replace("+00:00", "Z"),
+            "time_iso_local": datetime.fromtimestamp(int(d["time"]), tz=UTC)
+                               .astimezone(ZoneInfo(LOCAL_TZ))
+                               .isoformat(),
+            "age":            humanize.naturaldelta(datetime.now(tz=UTC) - datetime.fromtimestamp(int(d["time"]), tz=UTC)),
+            "type":       d.get("type"),
+            "ordertype":  d.get("ordertype"),
+            "price":      d.get("price"),
+            "vol":        d.get("vol"),
+            "cost":       d.get("cost"),
+            "fee":        d.get("fee"),
+            "margin":     d.get("margin"),
+            "misc":       d.get("misc")
         })
-    
+
     return formatted_trades
 
+def _split_pair(pair: str) -> tuple[str, str]:
+    """
+    返回 (base_asset, quote_asset)，先查 PAIR_MAPPING，
+    没命中就按 QUOTE_PRIORITY 尝试后缀拆分。
+    """
+    if pair in PAIR_MAPPING:
+        return PAIR_MAPPING[pair]
+
+    # 兜底：找一个在 QUOTE_PRIORITY 中、且能匹配 pair 后缀的 quote
+    for quote in QUOTE_PRIORITY:
+        if pair.endswith(quote):
+            return pair[:-len(quote)], quote
+
+    # 实在拆不了就抛错提醒配置
+    raise ValueError(f"Unknown pair '{pair}', please add to PAIR_MAPPING")
+
+def summarize_locked_funds(orders: dict) -> dict:
+    """
+    统计挂单已锁定的资金，返回 {'ZUSD': 'xxx', 'XXBT': 'yyy', ...}
+    逻辑：buy→锁 quote，sell→锁 base；
+    base/quote 由 _split_pair() 给出，支持扩展。
+    """
+    locked: dict[str, Decimal] = {}
+    for pair, lst in orders.items():
+        base, quote = _split_pair(pair)
+        for o in lst:
+            if not (o["status"] == "open" or Decimal(o["vol_exec"]) > 0):
+                continue
+            
+            vol   = DEC(o["vol"])
+            price = DEC(o["price"])
+            if o["type"] == "buy":             # 买单锁 quote 资产
+                locked[quote] = locked.get(quote, DEC("0")) + vol * price
+            else:                              # 卖单锁 base 资产
+                locked[base]  = locked.get(base,  DEC("0")) + vol
+
+    return {
+        asset: FMT(amt, 4 if asset.startswith("Z") else 8)
+        for asset, amt in locked.items() if amt > 0
+    }
+    
 def get_trade_balance(api_key, api_secret, asset="ZUSD"):
     """
     调用 Kraken 私有接口 /0/private/TradeBalance 获取账户的交易余额信息
@@ -271,12 +345,29 @@ def get_all_kraken_data():
         raw_asset_pairs = get_asset_pairs()
 
         # 5) 统一格式化
+        formatted_orders   = format_open_orders(open_orders_raw)
+        account_total      = format_account_balance(account_balance_raw)
+        locked_funds       = summarize_locked_funds(formatted_orders)
+
+        # 计算可用余额 = 总余额 - 锁定
+        available_balance  = {}
+        for asset, total in account_total.items():
+            total_dec   = DEC(total)
+            locked_dec  = DEC(locked_funds.get(asset, "0"))
+            available_balance[asset] = FMT(total_dec - locked_dec,
+                                        4 if asset.startswith("Z") else 8)
         formatted_data = {
-            "open_orders": format_open_orders(open_orders_raw),
-            "account_balance": format_account_balance(account_balance_raw),
+            "open_orders": formatted_orders,
+            # --------👇 这里是新的三层结构 --------
+            "account_balance": {
+                "total_balance":      account_total,
+                "locked_in_orders":   locked_funds,
+                "available_balance":  available_balance
+            },
+            # ------------------------------------
             "trade_balance": trade_balance_raw.get("result", {}),
             "trade_history": format_trade_history(raw_trade_history),
-            "asset_pairs": raw_asset_pairs.get("result", {})
+            "asset_pairs":   raw_asset_pairs.get("result", {})
         }
         return formatted_data
 

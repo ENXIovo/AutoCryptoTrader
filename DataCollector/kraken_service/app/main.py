@@ -3,10 +3,13 @@
 import json
 import redis
 import requests
+import humanize
 from fastapi import FastAPI, Query, HTTPException
 from celery.result import AsyncResult
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-from app.config import settings
+from app.config import settings, LOCAL_TZ
 from app.tasks import celery_app, fetch_and_store_data_on_demand, get_filtered_data
 
 app = FastAPI(title="Kraken Service")
@@ -39,7 +42,10 @@ def get_latest_kraken_data():
 
     # 读取主数据 (Hash 的所有 field)
     main_data = redis_client.hgetall(main_hash_key)
-    result_dict = {}
+    result_dict = {
+        "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "server_time_local": datetime.now(ZoneInfo(LOCAL_TZ)).isoformat(),
+    }
 
     # 解析主数据中各字段的 JSON
     # open_orders
