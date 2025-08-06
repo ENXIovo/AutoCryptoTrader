@@ -1,33 +1,51 @@
+import time
+
 from app.kraken_client import KrakenClient
 from app.models import (
     AddOrderRequest, AddOrderResponse,
     AmendOrderRequest, AmendOrderResponse,
-    CancelOrderRequest, CancelOrderResponse
+    CancelOrderRequest, CancelOrderResponse,
 )
 
 client = KrakenClient()
 
 
+# ----------------  下   单  ----------------
 def add_order_service(payload: AddOrderRequest) -> AddOrderResponse:
-    """
-    下单服务逻辑，调用 KrakenClient.add_order
-    """
-    # 转换为 dict 并传给 client
-    resp = client.add_order(payload.dict(exclude_none=True))
+    pl_dict = payload.model_dump(
+        by_alias=True,
+        mode="json",
+        exclude_none=True,
+    )
+    pl_dict.setdefault("userref", int(time.time()))
+    print(pl_dict)
+    resp = client.add_order(pl_dict)
+    if resp["error"]:
+        raise RuntimeError(f"Kraken add order failed: {resp['error']}")
     return AddOrderResponse(**resp)
 
 
+# ----------------  改   单  ----------------
 def amend_order_service(payload: AmendOrderRequest) -> AmendOrderResponse:
     """
-    改单服务逻辑，调用 KrakenClient.amend_order
+    调 AmendOrder
     """
-    resp = client.amend_order(payload.dict(exclude_none=True))
+    resp = client.amend_order(
+        payload.model_dump(exclude_none=True)   # 不需要 alias
+    )
+    if resp["error"]:
+        raise RuntimeError(f"Kraken amend order failed: {resp['error']}")
     return AmendOrderResponse(**resp)
 
 
+# ----------------  撤   单  ----------------
 def cancel_order_service(payload: CancelOrderRequest) -> CancelOrderResponse:
     """
-    撤单服务逻辑，调用 KrakenClient.cancel_order
+    调 CancelOrder
     """
-    resp = client.cancel_order(payload.dict(exclude_none=True))
+    resp = client.cancel_order(
+        payload.model_dump(exclude_none=True)
+    )
+    if resp["error"]:
+        raise RuntimeError(f"Kraken cancel order failed: {resp['error']}")
     return CancelOrderResponse(**resp)
