@@ -1,10 +1,10 @@
 services:
-  crypto-trade:
+  kraken-api:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
       args:
         BASE_IMAGE: kraken-base
-    container_name: crypto-trade
+    container_name: kraken-api
     ports:
       - "8100:8100"

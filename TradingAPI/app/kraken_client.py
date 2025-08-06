@@ -44,14 +44,10 @@ class KrakenClient:
 
         headers = {
             'API-Key': self.api_key,
-            'API-Sign': self._get_kraken_signature(endpoint, data)
+            'API-Sign': self._get_kraken_signature(endpoint, data),
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
-
-        if method.upper() == "POST":
-            resp = requests.post(url, headers=headers, data=data)
-        else:
-            # Kraken 大多数私有接口使用 POST，这里仅示例
-            resp = requests.get(url, headers=headers, params=data)
+        resp = requests.post(url, headers=headers, data=urllib.parse.urlencode(data))
 
         resp.raise_for_status()  # 如果 HTTP 状态码 != 200，会抛出异常
         return resp.json()

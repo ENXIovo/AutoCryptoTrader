@@ -123,6 +123,7 @@ def format_open_orders(raw_open_orders):
     formatted_orders = {}
 
     for order_id, d in orders.items():
+        print(f"Processing order: {d}")
         pair = d["descr"]["pair"]
         formatted_orders.setdefault(pair, [])
 
@@ -132,13 +133,18 @@ def format_open_orders(raw_open_orders):
 
         order_obj = {
             "order_id":   order_id,
+            "refid":      d.get("refid"),
+            "userref":    d.get("userref"),
+            "status":     d["status"],
+
+            # ---- descr 下的字段，有些单子不存在 ----
             "pair":       pair,
             "type":       d["descr"]["type"],
             "ordertype":  d["descr"]["ordertype"],
             "price":      d["descr"]["price"],
+
             "vol":        d["vol"],
             "vol_exec":   d["vol_exec"],
-            "status":     d["status"],
 
             # ── 时间字段 ──
             "opentm_iso_utc":   opentm_dt_utc.isoformat().replace("+00:00", "Z"),
@@ -206,24 +212,43 @@ def _split_pair(pair: str) -> tuple[str, str]:
 
 def summarize_locked_funds(orders: dict) -> dict:
     """
-    统计挂单已锁定的资金，返回 {'ZUSD': 'xxx', 'XXBT': 'yyy', ...}
-    逻辑：buy→锁 quote，sell→锁 base；
-    base/quote 由 _split_pair() 给出，支持扩展。
+    计算因挂单冻结的资产：
+      · buy 单 → 锁 quote 资金 (vol * price)
+      · sell 单 → 先看 refid（OCO 子单），同组只锁一次最大 vol
     """
-    locked: dict[str, Decimal] = {}
+    locked: dict[str, Decimal]      = {}           # 结果
+    oco_groups: dict[tuple, Decimal] = {}          # (base, refid) -> max vol
+
     for pair, lst in orders.items():
         base, quote = _split_pair(pair)
+
         for o in lst:
+            # 只冻结真正挂簿子的单（status=open 或 已部分成交）
             if not (o["status"] == "open" or Decimal(o["vol_exec"]) > 0):
                 continue
-            
+
             vol   = DEC(o["vol"])
             price = DEC(o["price"])
-            if o["type"] == "buy":             # 买单锁 quote 资产
-                locked[quote] = locked.get(quote, DEC("0")) + vol * price
-            else:                              # 卖单锁 base 资产
-                locked[base]  = locked.get(base,  DEC("0")) + vol
 
+            if o["type"] == "buy":
+                # 买单锁 quote 资产
+                locked[quote] = locked.get(quote, DEC("0")) + vol * price
+            else:
+                # 卖单：先按 refid 去重（OCO 两子单共用一笔 base 资产）
+                refid = o.get("refid")
+                if refid:
+                    key = (base, refid)
+                    # 同一组只保留最大 vol
+                    oco_groups[key] = max(oco_groups.get(key, DEC("0")), vol)
+                else:
+                    # 普通 sell 单直接累加
+                    locked[base] = locked.get(base, DEC("0")) + vol
+
+    # 把分组后的 OCO 卖单加入结果
+    for (base, _), vol in oco_groups.items():
+        locked[base] = locked.get(base, DEC("0")) + vol
+
+    # 格式化输出
     return {
         asset: FMT(amt, 4 if asset.startswith("Z") else 8)
         for asset, amt in locked.items() if amt > 0
