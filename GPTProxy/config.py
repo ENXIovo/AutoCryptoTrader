@@ -97,7 +97,7 @@ from datetime import datetime
 # "gpt-4o-2024-11-20"
 # "gpt-4.1-2025-04-14"
 # "o3-2025-04-16"
-DEFAULT_DEPLOYMENT_NAME = "gpt-4o-2024-11-20"
+DEFAULT_DEPLOYMENT_NAME = "chatgpt-4o-latest"
 
 # OpenAI API Configuration
 OPENAI_API_VERSION = "2024-02-01"
@@ -105,7 +105,7 @@ OPENAI_API_VERSION = "2024-02-01"
 ENDPOINT_CONFIGS = {
     "OPENAI": {
         "api_key": os.getenv("OPENAI_API_KEY"),
-        "models": ["gpt-4o-2024-11-20", "o3-2025-04-16"],
+        "models": ["chatgpt-4o-latest", "o3-2025-04-16", "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14"],
     }
 }
 

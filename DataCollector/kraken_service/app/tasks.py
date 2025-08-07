@@ -142,9 +142,11 @@ def format_open_orders(raw_open_orders):
             "type":       d["descr"]["type"],
             "ordertype":  d["descr"]["ordertype"],
             "price":      d["descr"]["price"],
+            "close":      d["descr"]["close"],
 
             "vol":        d["vol"],
             "vol_exec":   d["vol_exec"],
+            "oflags":     d["oflags"],
 
             # ── 时间字段 ──
             "opentm_iso_utc":   opentm_dt_utc.isoformat().replace("+00:00", "Z"),
