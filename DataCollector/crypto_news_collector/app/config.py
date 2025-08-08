@@ -1,16 +1,19 @@
-from pydantic import Field
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = Field(..., env="DATABASE_URL")
+    # Telegram credentials
     TELEGRAM_API_ID: int = Field(..., env="TELEGRAM_API_ID")
     TELEGRAM_API_HASH: str = Field(..., env="TELEGRAM_API_HASH")
     TELEGRAM_SESSION: str = Field("news_session", env="TELEGRAM_SESSION")
-    TELEGRAM_CHANNELS: str = Field("WatcherGuru,wublockgroup", env="TELEGRAM_CHANNELS")
-    TELEGRAM_BOT_TOKEN: str = Field(..., env="TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHANNELS: str = Field("", env="TELEGRAM_CHANNELS")  # comma-separated channel usernames/IDs
+
+    # Redis connection
+    REDIS_URL: str = Field("redis://redis-server:6379/0", env="REDIS_URL")
+    REDIS_STREAM_KEY: str = Field("stream:news:raw", env="REDIS_STREAM_KEY")
+    REDIS_STREAM_MAXLEN: int = Field(10000, env="REDIS_STREAM_MAXLEN")  # max length for stream; older entries trimmed
 
     class Config:
-        env_file = ".env"  # 保留支持 .env 文件的功能
-        extra = "ignore"
+        env_file = ".env"
 
 settings = Settings()
