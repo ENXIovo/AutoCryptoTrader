@@ -13,3 +13,4 @@ cryptography
 redis
 telethon
 humanize
+psycopg2-binary

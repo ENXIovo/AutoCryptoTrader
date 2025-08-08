@@ -96,11 +96,11 @@ services:
       dockerfile: dockerfile
     ports:
       - "8300:8000"
+    restart: unless-stopped
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
+
 
   newscollector-listener:
     build:
@@ -108,9 +108,7 @@ services:
       dockerfile: dockerfile
     command: python -m app.telegram_listener
     container_name: newscollector-listener
+    restart: unless-stopped
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
-
