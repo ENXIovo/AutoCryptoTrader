@@ -29,3 +29,15 @@ class LabelResponse(BaseModel):
     confidence: confloat(ge=0.0, le=1.0) = Field(
         ..., description="0.3 rumor, 0.6 partial, 0.9 confirmed"
     )
+
+class NewsItem(BaseModel):
+    source: str
+    category: str
+    importance: str
+    durability: str
+    summary: str
+    confidence: str
+    ts: str
+    key: str
+    label_version: str
+    weight: float

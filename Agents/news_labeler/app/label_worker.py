@@ -4,7 +4,7 @@ import logging
 from .whale_parser import parse_whale_fixed
 from .config import settings
 from .gpt_client import GPTClient
-from .redis_utils import (
+from .utils.redis_utils import (
     new_redis,
     ensure_group,
     xreadgroup,
