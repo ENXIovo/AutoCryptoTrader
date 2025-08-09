@@ -54,7 +54,7 @@ async def main():
                 maxlen=settings.REDIS_STREAM_MAXLEN,
                 approximate=True
             )
-            logger.debug(f"Pushed message to stream from {source}")
+            logger.info(f"Pushed message to stream from {source}")
         except Exception as exc:
             logger.exception(f"Failed to push message to Redis: {exc}")
 

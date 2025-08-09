@@ -1,0 +1,25 @@
+services:
+  auto-crypto-trade:
+    build:
+      context: ./strategy_agent
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: auto-crypto-base
+    container_name: auto-crypto-trade
+    ports:
+      - "8080:8080"  # 将容器的 8080 端口映射到主机
+
+  newslabeler-web:
+    build:
+      context: ./news_labeler
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  newslabeler-worker:
+    build:
+      context: ./news_labeler
+      dockerfile: Dockerfile
+    command: python -m app.label_worker
+    restart: unless-stopped
