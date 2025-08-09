@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # ─────────── 代理 & 工具配置 ───────────
     # 允许通过 JSON 字符串覆写
     agent_configs_json: str | None = Field(None, env="AGENT_CONFIGS_JSON")
+    
+    news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
 
     class Config:
         env_file = ".env"
@@ -43,7 +45,7 @@ def _default_agent_configs() -> list[dict]:
             "name": "Market Analyst",
             "deployment_name": "gpt-5-mini",
             "enabled": True,
-            "tools": ["getCryptoNews"],
+            "tools": ["getTopNews"],
             "prompt": """
 You are the Market Analyst. Focus ONLY on broad market information quality.
 
