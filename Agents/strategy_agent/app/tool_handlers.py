@@ -14,10 +14,11 @@ news_client = NewsClient(settings.news_service_url)
 kraken_client = KrakenClient(settings.kraken_service_url)
 data_client = DataClient(settings.data_service_url)
 
+def _getTopNews_fixed(**_ignored) -> list[dict]:
+    return news_client.getTopNews(limit=settings.news_top_limit, period=None)
+
 TOOL_HANDLERS = {
-    "getCryptoNews": news_client.getCryptoNews,
+    "getTopNews": _getTopNews_fixed,
     "getAccountInfo": kraken_client.getAccountInfo,
     "getKlineIndicators": data_client.getKlineIndicators,
-    # 以后再新增其它工具，只需在这里扩展映射
-    # 以后可继续添加其他工具
 }

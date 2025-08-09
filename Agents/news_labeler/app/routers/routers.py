@@ -14,9 +14,8 @@ router = APIRouter()
 def top_news(
     limit: int = Query(20, ge=1, le=200),
     period: Optional[str] = Query(None, description="day|week|month"),
-    refresh: bool = Query(True, description="recompute before returning"),
 ):
-    return get_top_news(limit=limit, period=period, refresh=refresh)
+    return get_top_news(limit=limit, period=period)
 
 
 @router.get("/health")

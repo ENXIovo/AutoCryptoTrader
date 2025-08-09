@@ -12,27 +12,30 @@ DEFAULT_SOURCE_FACTOR_MAP: Dict[str, float] = {
     "whale_alert_io":          0.90,
 }
 
-DEFAULT_CATEGORY_FACTOR_MAP: Dict[str, float] = {
-    # 政策/机构
-    "regulation":             1.30,
-    "institutional_adoption": 1.25,
-    "etf":                    1.20,
-    # 研发/上新
-    "protocol_launch":        1.15,
-    "project_upgrade":        1.08,
-    "exchange_listing":       1.05,
-    "partnership":            1.02,
-    # 风险与数据
-    "security_incident":      1.10,
-    "onchain_metric":         1.00,
-    "derivatives":            1.00,
-    "mining":                 0.98,
-    # 稳定币
-    "stablecoin":             1.00,
-    "stablecoin_issuance":    0.85,
-    # 若 GPT 侧仍可能打到鲸鱼（不建议）
-    "whale_transaction":      0.80,
+DEFAULT_CATEGORY_FACTOR_MAP = {
+    # 宏观/监管/ETF —— 能改预期、改资金通道
+    "regulation":       1.35,  # 行业或国家级监管/执法/豁免/许可
+    "macro":            1.20,  # 央行/宏观政策/税制/选举等
+    "etf":              1.20,  # 申报/审批/大额净流入等
+
+    # 安全/数据/衍生品 —— 会引发次级连锁或短中期波动
+    "security_incident":1.12,  # 黑客/跑路/合规下架
+    "onchain_metric":   1.00,  # 需结合重要性与TTL本身去区分大小
+    "derivatives":      1.00,
+    "mining":           0.98,
+
+    # 稳定币与法币出入口
+    "stablecoin":       1.00,
+
+    # 交易所/项目/合作 —— 基本面改良但对大盘影响有限
+    "exchange_status":  1.03,  # 新路由/功能/合规接入，略正面
+    "project_upgrade":  1.06,  # 主网/重大版本，适度
+    "partnership":      1.02,
+
+    # 噪声类
+    "whale_transaction":0.60,  # 保留但显著降权
 }
+
 
 def _parse_kv_float(s: str) -> Dict[str, float]:
     """支持 'a=0.9,b=0.8' 或带空格/换行；键统一小写。"""
@@ -63,9 +66,21 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(..., env="OPENAI_API_KEY")
     labeler_model: str = Field("gpt-5-mini", env="LABELER_MODEL")
     labeler_system_prompt: str = Field(
-        "Base ONLY on the provided text; no outside knowledge. Return JSON matching the provided schema.",
+        """
+You are a strict, no-hallucination crypto news labeler.
+
+- Use ONLY the given text; do not add or verify facts. Output EXACTLY the JSON schema (no extra keys).
+- category: choose 1–3 from the controlled list that best fit the text.
+- importance (0–1): 0.1 minor (local/small-cap only), 0.5 notable (sector/medium-cap), 0.8 major (macro policy, BTC/ETH impact, >$1B scale, major legal/regulatory events).
+- durability is a FIXED TTL bucket: hours=6h; days=7d; weeks=3w; months=3mo.
+Pick the bucket that best matches how long the news will remain relevant for trading or market perception.
+- confidence (0–1), based ONLY on the text’s phrasing/evidence:
+0.3 speculative/hedged wording; 0.6 specific stated claim (entities/numbers); 0.9 explicit proof inside the text (e.g., quoted order/filing ID or first-party announcement excerpt).
+- summary: one neutral English sentence with key entities, numbers, and the direct action/effect; no hype.
+""",
         env="LABELER_SYSTEM_PROMPT"
     )
+
 
     # Redis 基础
     redis_url: str = Field("redis://redis-server:6379/0", env="REDIS_URL")
@@ -80,17 +95,17 @@ class Settings(BaseSettings):
 
     # 半衰期（小时）
     half_life_hours: Dict[str, float] = Field(
-        {"hours": 6, "days": 48, "weeks": 168, "months": 720},
+        {"hours": 3, "days": 48, "weeks": 168, "months": 720},
         env="HALF_LIFE_HOURS",
     )
 
     # TTL 映射（秒）
     durability_ttl_seconds: Dict[str, int] = Field(
         {
-            "hours": 12 * 3600,
+            "hours": 6 * 3600,
             "days": 7 * 24 * 3600,
-            "weeks": 28 * 24 * 3600,
-            "months": 120 * 24 * 3600,
+            "weeks": 21 * 24 * 3600,
+            "months": 90 * 24 * 3600,
         },
         env="DURABILITY_TTL_SECONDS",
     )
