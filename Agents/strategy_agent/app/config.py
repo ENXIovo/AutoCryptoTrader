@@ -41,7 +41,7 @@ def _default_agent_configs() -> list[dict]:
     return [
         {
             "name": "Market Analyst",
-            "deployment_name": "gpt-4.1-mini-2025-04-14",
+            "deployment_name": "gpt-5-mini",
             "enabled": True,
             "tools": ["getCryptoNews"],
             "prompt": """
@@ -62,7 +62,7 @@ Start with `--- Market Analyst Report ---`, then concise bullet points.
         },
         {
             "name": "Lead Technical Analyst",
-            "deployment_name": "o3-2025-04-16",
+            "deployment_name": "gpt-5-mini",
             "enabled": True,
             "tools": ["getKlineIndicators"],
             "prompt": """
@@ -90,7 +90,7 @@ Output:
         },
         {
             "name": "Position Manager",
-            "deployment_name": "gpt-4.1-mini-2025-04-14",
+            "deployment_name": "gpt-5-mini",
             "enabled": True,
             "tools": ["getAccountInfo"],
             "prompt": """
@@ -118,7 +118,7 @@ Begin with `--- Position Manager Brief ---`. Bullets only.
         },
         {
             "name": "Risk Manager",
-            "deployment_name": "gpt-4.1-mini-2025-04-14",
+            "deployment_name": "gpt-5-mini",
             "enabled": True,
             "tools": ["getAccountInfo"],
             "prompt": """

@@ -1,5 +1,7 @@
 fastapi
+openai
 uvicorn
 requests
 pydantic
 pydantic_settings
+redis
