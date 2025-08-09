@@ -4,7 +4,7 @@ from typing import Dict, Iterable, Tuple
 from datetime import datetime, timezone
 from redis import Redis
 from redis.exceptions import ConnectionError, TimeoutError as RedisTimeout
-from .config import settings
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
