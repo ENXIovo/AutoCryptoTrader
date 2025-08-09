@@ -5,3 +5,5 @@ requests
 pydantic
 pydantic_settings
 redis
+celery[redis]
+celery[celery-beat]

@@ -4,7 +4,8 @@
 实现串行化的多代理“会议”流程。
 """
 import asyncio
-import uuid
+import json
+import redis
 from datetime import datetime, timezone # 导入datetime模块
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List
@@ -27,6 +28,30 @@ def _build_scheduler(tools: list[str]) -> Scheduler:
         tool_handlers=handlers,
         tool_schemas=schemas,
     )
+
+def _store_analysis_results(report_data: Dict[str, Any]) -> None:
+    """
+    将本次会议的聚合结果写入 Redis：
+    - 使用 Hash 结构：field=UTC 时间戳，value=JSON 报告
+    - 键名由 settings.analysis_results_key 指定
+    """
+    # 选用与你 Celery 一致的 Redis，优先 result_backend，没有就用 broker
+    r = redis.Redis.from_url(settings.redis_url)
+
+    ts = datetime.now(timezone.utc).isoformat()
+
+    # 尽量用 JSON 序列化；若个别字段不可序列化，可按需做轻量转换
+    try:
+        payload = json.dumps(report_data, ensure_ascii=False)
+    except TypeError:
+        payload = json.dumps(
+            {k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
+             for k, v in report_data.items()},
+            ensure_ascii=False
+        )
+
+    # Hash: HSET analysis_results <ts> <json>
+    r.hset(settings.analysis_results_key, ts, payload)
 
 
 async def run_agents_in_sequence_async() -> Dict[str, Any]:
@@ -86,6 +111,11 @@ Based on your role and the context above, please provide your analysis now.
         final_reports[agent_name] = result
 
     print("--- Trading Strategy Meeting Ended ---")
+    # 会议汇总结果入库（不影响主流程，即使失败也只打印告警）
+    try:
+        _store_analysis_results(final_reports)
+    except Exception as e:
+        print(f"Failed to store analysis results: {e}")
     return final_reports
 
 # --- 保留您原有的并行执行函数，以备不时之需 ---

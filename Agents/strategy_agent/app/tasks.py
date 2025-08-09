@@ -16,18 +16,18 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
 )
 
-# --- 按照您的要求，暂时注释掉自动调度功能 ---
-#
-# # 解析 CRON 表达式（形如 "0 */4 * * *"）
-# minute, hour, day, month, dow = settings.strategy_cron.split()
-# celery_app.conf.beat_schedule = {
-#     "run-strategy-agent": {
-#         "task": "app.tasks.run_strategy",
-#         "schedule": crontab(minute=minute, hour=hour,
-#                             day_of_month=day, month_of_year=month,
-#                             day_of_week=dow),
-#     }
-# }
+
+# 解析 CRON 表达式（形如 "0 */4 * * *"）
+minute, hour, day, month, dow = settings.strategy_cron.split()
+celery_app.conf.beat_schedule = {
+    "run-strategy-agent": {
+        "task": "app.tasks.run_strategy",
+        "schedule": crontab(minute=minute, hour=hour,
+                            day_of_month=day, month_of_year=month,
+                            day_of_week=dow),
+        "options": {"queue": "auto_trade_queue"},
+    }
+}
 celery_app.conf.timezone = "UTC"
 
 
