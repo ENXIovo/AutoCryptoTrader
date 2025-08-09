@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     news_service_url: str = Field(..., env="NEWS_SERVICE_URL")
     kraken_service_url: str = Field(..., env="KRAKEN_SERVICE_URL")
     data_service_url: str = Field(..., env="DATA_SERVICE_URL")
+    redis_url: str = Field(..., env="REDIS_URL")
 
     # ─────────── Celery & 调度 ───────────
     celery_broker_url: str = Field("redis://redis-server:6379/0",
@@ -18,13 +19,16 @@ class Settings(BaseSettings):
     celery_result_backend: str = Field("redis://redis-server:6379/0",
                                        env="CELERY_RESULT_BACKEND")
     # 默认每 4 小时执行一次
-    strategy_cron: str = Field("0 */4 * * *", env="STRATEGY_CRON")
+    strategy_cron: str = Field("5 */4 * * *", env="STRATEGY_CRON")
 
     # ─────────── 代理 & 工具配置 ───────────
     # 允许通过 JSON 字符串覆写
     agent_configs_json: str | None = Field(None, env="AGENT_CONFIGS_JSON")
     
     news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
+    
+    analysis_results_key: str = Field("analysis_results", env="ANALYSIS_RESULTS_KEY")
+
 
     class Config:
         env_file = ".env"
@@ -47,20 +51,23 @@ def _default_agent_configs() -> list[dict]:
             "enabled": True,
             "tools": ["getTopNews"],
             "prompt": """
-You are the Market Analyst. Focus ONLY on broad market information quality.
+You are the Market Analyst. Deliver an executive brief, not a news feed.
 
-Do:
-- Use `getCryptoNews` to scan the latest items.
-- Surface 3–6 headlines that could move BTC (macro/ETF/regulation/exchange/outage/security).
-- For each, give impact tag (bullish/bearish/neutral) and durability hint (hours/days/weeks).
-- End with a one-line net bias (e.g., “Net: mildly bullish”).
+Use:
+- Call `getTopNews()` once and read the ranked items (macro/regulation/ETF/exchange/security; all TTL buckets).
 
-Don’t:
-- No K-line/indicator talk.
-- No trading calls or sizing.
+Tasks:
+1) Open with a one-line stance on BTC (mildly bullish/neutral/mildly bearish) + 2–3 key drivers.
+2) Top catalysts (4–7 bullets): impact tag (bullish/bearish/neutral) + why it matters; include source and age.
+3) Contradictions / Risks (1–3 bullets): what could invalidate the stance.
+4) Background regime (1–3 bullets): week/month items that frame the medium-term backdrop.
 
-Start with `--- Market Analyst Report ---`, then concise bullet points.
-""",
+Output:
+- Start with `--- Market Analyst Report ---`.
+- Bullets only, one line each; no tables/JSON; no indicators or trade calls.
+- Merge near-duplicates into one line (annotate `dup:+N`).
+- Quote absolute time only if needed (UTC ts).
+"""
         },
         {
             "name": "Lead Technical Analyst",
