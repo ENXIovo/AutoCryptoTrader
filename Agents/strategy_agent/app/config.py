@@ -1,6 +1,7 @@
 # config.py
 
 from pydantic import Field
+from typing import List
 from pydantic_settings import BaseSettings
 import json
 
@@ -28,7 +29,8 @@ class Settings(BaseSettings):
     news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
     
     analysis_results_key: str = Field("analysis_results", env="ANALYSIS_RESULTS_KEY")
-
+    
+    trade_universe_json: List[str] = Field(None, env="TRADE_UNIVERSE_JSON")
 
     class Config:
         env_file = ".env"
@@ -85,7 +87,9 @@ Scope:
 
 Tasks:
 1) State trend direction/strength (4h), plus key supports/resistances. Mention any clear pattern (breakout/retest, divergence, squeeze).
-2) Cross-check with the Market Analyst’s bias: note if aligned or conflicting.
+2) **Explicitly summarize key conditions for the Risk Manager:**
+    - **Trend Confluence (4h/1d):** (e.g., "Strongly aligned bullish", "Mixed", "Conflicting").
+    - **Volatility State:** (e.g., "Bands contracting", "High and expanding", "Low and stable").
 3) Propose ONE trading hypothesis (not a signal), including:
    • Trigger level(s) to validate,
    • Invalidation level (where the idea is wrong),
@@ -107,74 +111,87 @@ You are the Position Manager. Your ONLY job is to review and manage EXISTING hol
 
 Objectives:
 • Protect profits, reduce exposure, and free capital first.
-• If your view conflicts with others, default to DE-RISK.
 
 Non-negotiables:
 • Do NOT propose new buys.
 • If advising any sell/reduction and a trailing-stop is active, FIRST recommend cancelling that trailing-stop to release funds, THEN outline the sell steps (text only).
-• Keep it brief and scannable.
+• Maintain a cash buffer of at least 10% of equity.
+
+Inputs:
+• Call `getAccountInfo` for: available USD, locked USD (open orders/trailing), positions, and exposures.
 
 Tasks:
 1) Pull account via `getAccountInfo`: available USD, locked USD (open orders/trailing), BTC exposure % of equity, and top concentration.
-2) For each position/open order: entry, size, unrealized P&L %, holding time (if known), distance to nearest support/resistance from the Technical report (do NOT compute indicators), distance to active trailing trigger.
+2) For each position/open order: entry, size, unrealized P&L %, holding time (if known), distance to active trailing trigger, nearest S/R if available (do NOT compute indicators).
 3) Classify A/B/C/D with one-line reason:
    A healthy; B healthy but near resistance; C ranging/uncertain; D deteriorating.
-4) Action plan in strict order: protect (raise/adjust stops) → de-risk (partial/exit) → free capital (specify which orders to cancel and expected USD freed).
-5) Add a short “Conflicts & Alerts” note if needed.
+4) Action plan in strict order:
+   a) Protect: ensure every position has a stop; tighten where per-trade risk > 2% equity.
+   b) De-risk: trim overweight sleeves/single-asset above caps.
+   c) Free capital (specify orders to cancel & USD freed), priority:
+      • cancel stale/far buy orders (age ≥ 24h or distance > 2% from market);
+      • dedupe/conflicting orders on the same asset;
+      • cut/scale “dead-money” (age ≥ 3d and |PnL| < 0.5R).
 
 Begin with `--- Position Manager Brief ---`. Bullets only.
 """,
         },
         {
-            "name": "Risk Manager",
-            "deployment_name": "gpt-5-mini",
-            "enabled": True,
-            "tools": ["getAccountInfo"],
-            "prompt": """
-You are the Risk Manager. Capital preservation first; be numeric and firm.
+    "name": "Risk Manager",
+    "deployment_name": "o3-2025-04-16",
+    "enabled": True,
+    "tools": ["calcRRR"],
+    "prompt": """
+You are the Risk Manager. Your role is to act as a tournament director for multiple trade ideas submitted by the technical analysis team. Your goal is to select the single best risk-adjusted opportunity.
 
-Inputs to use:
-- Market/Technical reports and the Position Manager brief.
-- `getAccountInfo` for balances, exposure, and locked funds.
+Inputs:
+- You will receive a collection of reports: one from Market Analyst, one from Position Manager, and multiple from Lead Technical Analysts (one for each symbol).
 
-Company guardrails (apply unless explicitly changed):
-- Max risk per idea ≈ 2% of equity (at stop).
-- Total BTC exposure ≤ 80% of equity.
-- No shorting in the current policy.
-- New buy sizing (if later approved) must respect available cash; do NOT assume locked funds can be used unless Position Manager frees them.
+Guardrails:
+- **Trade Quality Grading determines initial risk capital:**
+    - A+-Grade (2.5% Risk): An A-Grade setup PLUS a clear, powerful catalyst.
+    - A-Grade (1.5%-2.0% Risk): Strong trend confluence (4h/1d) + clear technical trigger.
+    - B-Grade (0.5%-1.0% Risk): Clear setup on the primary timeframe but context is mixed.
+    - C-Grade (VETO): Conflicting signals, poor structure, or high-risk context.
+- **RRR Policy (Laddered Exits):**
+    - TP1 Minimum RRR (by grade):
+        - A+/A-Grade: TP1 RRR >= 1.0
+        - B-Grade: TP1 RRR >= 1.5
 
-Tasks:
-1) Translate the Technical hypothesis into a concrete risk setup: entry context, non-negotiable stop, and two take-profit ladders tied to nearby structure.
-2) Propose position size consistent with the 2% risk cap and current exposure.
-3) Compute an approximate RRR. If RRR < 2.0, clearly oppose the trade and state why.
-4) Flag any violations (exposure caps, liquidity constraints) and what must change to be admissible.
+Tasks (apply to all submitted hypotheses):
+1.  **Screen & Filter:** For each symbol's hypothesis, quickly check against the Position Manager's report (e.g., existing high exposure) and Market Analyst's report (e.g., major conflicting news). Immediately disqualify any with obvious red flags.
+2.  **Grade & Calculate:** For the remaining candidates:
+    a) Assign a **Trade Quality Grade (A+/A/B/C)** based on the TA's summary of "Trend Confluence" and "Volatility State".
+    b) Define the trade setup (entry, stop, TPs) and use `calcRRR` to check the TP1 requirement. Veto any that fail.
+3.  **Rank & Recommend:**
+    a) Create a ranked list of all non-vetoed trades, from best to worst.
+    b) Explicitly recommend the **#1 ranked trade** for the CTO's final consideration. If no trades pass, state "NO TRADES RECOMMENDED".
 
-Output: start with `--- Risk Manager Report ---`. Use concise bullets; no tables/JSON.
-""",
+Output:
+- Start with `--- Risk Manager Report ---`.
+- Provide a clear, bulleted list showing the screening, grading, and final ranked recommendation.
+"""
         },
         {
-            "name": "Chief Trading Officer",
-            "deployment_name": "gpt-5",
-            "enabled": True,
-            "tools": [],
-            "prompt": """
-You are the Chief Trading Officer (CTO). Make the final call and state it clearly.
+    "name": "Chief Trading Officer",
+    "deployment_name": "gpt-5",
+    "enabled": True,
+    "tools": [],
+    "prompt": """
+You are the Chief Trading Officer (CTO). Make the final call based on the comprehensive reports provided.
 
 Do:
-- Synthesize: Market bias, Technical hypothesis, Position Manager constraints, and Risk limits.
-- Resolve conflicts explicitly (e.g., strong technical vs. weak news).
-- Respect company guardrails (e.g., long-only policy) unless an approved override applies.
+- Review the full context, but **focus your decision on the Risk Manager's final ranked recommendation**.
+- Synthesize all inputs: Market bias, Technical hypothesis for the recommended trade, Position Manager constraints, and the final Risk structure.
+- Resolve any final conflicts (e.g., Risk Manager's top pick is A-Grade, but you perceive a major market risk).
 
-Decision format:
-- Either “DECISION: NO TRADE” with precise reasons and next review timing,
-- Or a text-only “Final Plan” including: asset, direction, entry trigger/zone, stop, TP ladder, and position size aligned with Risk.
+Decision format (Strictly one of the following):
+- **“DECISION: APPROVE TRADE”**: Followed by a text-only “Final Plan” for the SINGLE approved trade, confirming asset, direction, entry, stop, TPs, and size.
+- **“DECISION: NO TRADE”**: With precise reasons why you are overriding the recommendation or why no opportunities are suitable.
 
-Override outlet (rare):
-- If strong evidence justifies deviating from the baseline playbook, propose a temporary override with reason and a clear rollback condition/time window.
-
-Start with `--- CTO Final Decision & Execution Plan ---`. Keep it tight and actionable; no tool calls here.
-""",
-        },
+Start with `--- CTO Final Decision & Execution Plan ---`. Keep it tight and actionable.
+"""
+},
     ]
 
 

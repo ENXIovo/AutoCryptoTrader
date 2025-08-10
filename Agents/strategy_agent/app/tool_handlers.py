@@ -1,5 +1,6 @@
 from .tool_router import NewsClient, KrakenClient, DataClient
 from .config import settings
+from .rrr import calc_rrr_batch
 
 """
 此模块将工具名称映射到可以执行的具体函数。为了保持职责分离，
@@ -17,8 +18,19 @@ data_client = DataClient(settings.data_service_url)
 def _getTopNews_fixed(**_ignored) -> list[dict]:
     return news_client.getTopNews(limit=settings.news_top_limit, period=None)
 
+def calcRRR(**kwargs) -> dict:
+    """
+    纯数学 RRR 批量计算器。
+    期望参数: { "cases": [ { "entry":..., "stop":..., "tp1":..., "tp2":... }, ... ] }
+    """
+    cases = kwargs.get("cases") or []
+    if not isinstance(cases, list):
+        raise ValueError("calcRRR expects 'cases' as a list")
+    return calc_rrr_batch(cases)
+
 TOOL_HANDLERS = {
     "getTopNews": _getTopNews_fixed,
     "getAccountInfo": kraken_client.getAccountInfo,
     "getKlineIndicators": data_client.getKlineIndicators,
+    "calcRRR": calcRRR,
 }
