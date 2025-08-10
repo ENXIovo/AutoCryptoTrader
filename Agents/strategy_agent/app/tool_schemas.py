@@ -2,6 +2,32 @@ from typing import Dict, Any
 
 # 函数 schema 给 GPT-Proxy 使用
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "calcRRR": {
+        "type": "function",
+        "name": "calcRRR",
+        "description": "Pure-math RRR calculator. Inputs: entry, stop, tp1, tp2 (optional). Returns risk/reward and RRRs. No policy.",
+        "parameters": {
+        "type": "object",
+        "properties": {
+            "cases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                "entry": { "type": "number" },
+                "stop":  { "type": "number" },
+                "tp1":   { "type": "number" },
+                "tp2":   { "type": "number" }
+                },
+                "required": ["entry","stop","tp1"],
+                "additionalProperties": False
+            }
+            }
+        },
+        "required": ["cases"],
+        "additionalProperties": False
+        }
+    },
     "getTopNews": {
         "type": "function",
         "name": "getTopNews",
