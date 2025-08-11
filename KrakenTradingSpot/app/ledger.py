@@ -1,0 +1,121 @@
+# app/ledger.py
+import redis
+from typing import Dict, Optional, List
+
+from app.config import settings
+from app.models import TradeLedgerEntry, TradeStatus
+
+class TradeLedger:
+    """
+    一个用于管理Redis中交易台账的封装类。
+    它处理所有与交易状态持久化相关的底层操作。
+    """
+    def __init__(self, redis_url: str):
+        """
+        初始化Ledger，连接到指定的Redis数据库。
+        """
+        self.hash_key = "active_trades"
+        try:
+            self.client = redis.Redis.from_url(redis_url, decode_responses=True)
+            self.client.ping()
+            print("Successfully connected to Ledger Redis.")
+        except redis.exceptions.ConnectionError as e:
+            print(f"FATAL: Could not connect to Ledger Redis at {redis_url}. Error: {e}")
+            # 这里的raise会让应用在无法连接到Redis时启动失败，这通常是期望的行为
+            raise
+
+    def write_trade(self, trade: TradeLedgerEntry) -> None:
+        """将一笔交易记录写入或更新到台账中。"""
+        try:
+            self.client.hset(self.hash_key, trade.symbol, trade.model_dump_json())
+            print(f"Ledger: Wrote/Updated trade for {trade.symbol}")
+        except redis.exceptions.RedisError as e:
+            print(f"Error writing to Redis ledger for {trade.symbol}: {e}")
+            raise
+
+    def get_trade(self, symbol: str) -> Optional[TradeLedgerEntry]:
+        """根据交易对(symbol)从台账中读取一笔交易。"""
+        try:
+            trade_json = self.client.hget(self.hash_key, symbol)
+            if trade_json:
+                return TradeLedgerEntry.model_validate_json(trade_json)
+            return None
+        except redis.exceptions.RedisError as e:
+            print(f"Error reading from Redis ledger for {symbol}: {e}")
+            raise
+
+    def get_all_trades(self) -> List[TradeLedgerEntry]:
+        """获取台账中所有正在进行的交易。"""
+        try:
+            all_trades_raw = self.client.hgetall(self.hash_key)
+            if not all_trades_raw:
+                return []
+            return [
+                TradeLedgerEntry.model_validate_json(trade_json)
+                for trade_json in all_trades_raw.values()
+            ]
+        except redis.exceptions.RedisError as e:
+            print(f"Error reading all trades from Redis ledger: {e}")
+            raise
+
+    def delete_trade(self, symbol: str) -> bool:
+        """当一笔交易结束后，从台账中删除它。返回是否成功删除。"""
+        try:
+            result = self.client.hdel(self.hash_key, symbol)
+            if result > 0:
+                print(f"Ledger: Deleted trade for {symbol}")
+            return result > 0
+        except redis.exceptions.RedisError as e:
+            print(f"Error deleting from Redis ledger for {symbol}: {e}")
+            raise
+
+    def get_all_active_symbols(self) -> List[str]:
+        """获取所有需要被监控的交易的symbol列表。"""
+        trades = self.get_all_trades()
+        return [
+            trade.symbol for trade in trades
+            if trade.status in [TradeStatus.ACTIVE, TradeStatus.TP1_HIT]
+        ]
+
+    def update_trade_atomically(self, symbol: str, update_function) -> Optional[TradeLedgerEntry]:
+        """
+        提供一个原子性的更新操作，用于所有“先读后改再写”的场景。
+        这可以防止并发冲突。
+
+        :param symbol: 要更新的交易对
+        :param update_function: 一个接收TradeLedgerEntry对象并返回修改后对象的函数
+        :return: 更新后的TradeLedgerEntry对象，如果不存在则返回None
+        """
+        # 使用WATCH来确保在读写之间没有其他客户端修改这个哈希字段
+        with self.client.pipeline() as pipe:
+            try:
+                pipe.watch(self.hash_key)
+                trade_json = pipe.hget(self.hash_key, symbol)
+                if not trade_json:
+                    return None
+
+                trade = TradeLedgerEntry.model_validate_json(trade_json)
+                
+                # 调用传入的函数来执行修改逻辑
+                updated_trade = update_function(trade)
+                if not updated_trade: # 如果更新函数决定不更新，可以返回None
+                    return trade
+                    
+                pipe.multi()
+                pipe.hset(self.hash_key, symbol, updated_trade.model_dump_json())
+                pipe.execute()
+                
+                print(f"Ledger: Atomically updated trade for {symbol}")
+                return updated_trade
+            except redis.exceptions.WatchError:
+                # 如果在WATCH期间，哈希被修改了，操作会失败，可以进行重试
+                print(f"WatchError on {symbol}, potential conflict. Retrying might be needed.")
+                return None # 或者在这里加入重试逻辑
+            except redis.exceptions.RedisError as e:
+                print(f"Error during atomic update for {symbol}: {e}")
+                raise
+
+# --- 全局单例 ---
+# 创建一个全局唯一的ledger实例，供应用其他部分导入和使用
+# 这被称为“单例模式”，可以确保整个应用共享同一个数据库连接池
+ledger_instance = TradeLedger(redis_url=settings.REDIS_URL_LEDGER)

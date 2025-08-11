@@ -7,10 +7,11 @@ import asyncio
 import json
 import os
 import redis
-from datetime import datetime, timezone # 导入datetime模块
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
-from .config import get_agent_configs, settings
+# CHANGED: 导入 get_trade_universe
+from .config import get_agent_configs, settings, get_trade_universe 
 from .gpt_client import GPTClient
 from .scheduler import Scheduler
 from .tool_schemas import TOOL_SCHEMAS
@@ -38,10 +39,7 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
     """
     # 选用与你 Celery 一致的 Redis，优先 result_backend，没有就用 broker
     r = redis.Redis.from_url(settings.redis_url)
-
     ts = datetime.now(timezone.utc).isoformat()
-
-    # 尽量用 JSON 序列化；若个别字段不可序列化，可按需做轻量转换
     try:
         payload = json.dumps(report_data, ensure_ascii=False)
     except TypeError:
@@ -50,27 +48,12 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
              for k, v in report_data.items()},
             ensure_ascii=False
         )
-
     # Hash: HSET analysis_results <ts> <json>
     r.hset(settings.analysis_results_key, ts, payload)
 
 
-def _get_trade_universe() -> List[str]:
-    """
-    从 env 中读取可选币种，形如：
-    trade_universe_json='["BTC","ETH"]'
-    如果未设置，则默认 ["BTC","ETH"]。
-    （不修改 config.py，纯在本文件自给自足）
-    """
-    raw = settings.trade_universe_json
-    if raw:
-        try:
-            arr = json.loads(raw)
-            if isinstance(arr, list) and all(isinstance(x, str) for x in arr):
-                return arr
-        except Exception:
-            pass
-    return ["BTC"]
+# REMOVED: 本地的 _get_trade_universe 函数已被删除，因为它现在从 config.py 导入
+
 
 async def _analyze_agent(
     agent_cfg: Dict[str, Any],
@@ -88,9 +71,9 @@ async def _analyze_agent(
 
 async def run_agents_in_sequence_async() -> Dict[str, Any]:
     """
-    新版：并行 News/PM/多份 TA；随后串行 Risk -> CTO。
+    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO。
     """
-    print("--- Starting Trading Strategy Meeting (parallel News/PM/TA) ---")
+    print("--- Starting Trading Strategy Meeting (New Workflow) ---")
 
     current_utc_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
     agent_configs = [c for c in get_agent_configs() if c.get("enabled")]
@@ -107,114 +90,86 @@ async def run_agents_in_sequence_async() -> Dict[str, Any]:
     risk_cfg = cfg_by_name.get("Risk Manager")
     cto_cfg = cfg_by_name.get("Chief Trading Officer")
 
-    # 1) 并行：News（一次）+ PM（一次）+ TA（多币种）
+    # ------------------ MODIFIED: STAGE 1 (Parallel Base Analysis) ------------------
+    # 只运行不互相依赖的基础分析师
     tasks = []
-    task_tags = []  # 用于标注结果属于谁/哪个 symbol
+    task_tags = []
 
     if news_cfg:
-        tasks.append(
-            _analyze_agent(
-                news_cfg,
-                user_message=f"""{meeting_context_header}
-# Your Task:
-Provide today's market/crypto executive brief as per your role.
-""",
-            )
-        )
+        tasks.append(_analyze_agent(news_cfg, user_message=f"{meeting_context_header}\n# Your Task:\nProvide today's market/crypto executive brief."))
         task_tags.append(("Market Analyst", None))
 
-    if pm_cfg:
-        tasks.append(
-            _analyze_agent(
-                pm_cfg,
-                user_message=f"""{meeting_context_header}
-# Your Task:
-Review existing holdings and open orders first; free capital if applicable.
-""",
-            )
-        )
-        task_tags.append(("Position Manager", None))
-
-    ta_symbols = _get_trade_universe()
+    ta_symbols = get_trade_universe()
     if ta_cfg:
         for sym in ta_symbols:
-            # 如果提示词里支持 {symbol} 占位符，则替换；否则保持原样
-            ta_prompt = ta_cfg["prompt"]
-            if "{symbol}" in ta_prompt:
-                ta_prompt = ta_prompt.format(symbol=sym)
-
-            tasks.append(
-                _analyze_agent(
-                    ta_cfg,
-                    user_message=f"""{meeting_context_header}
-# Your Task:
-Act as Lead Technical Analyst for symbol: {sym}.
-Focus ONLY on {sym} (and optionally {sym}BTC for relative strength).
-""",
-                    system_message_override=ta_prompt,
-                )
-            )
+            ta_prompt = ta_cfg["prompt"].format(symbol=sym) if "{symbol}" in ta_cfg["prompt"] else ta_cfg["prompt"]
+            tasks.append(_analyze_agent(ta_cfg, user_message=f"{meeting_context_header}\n# Your Task:\nAct as Lead Technical Analyst for symbol: {sym}.", system_message_override=ta_prompt))
             task_tags.append(("Lead Technical Analyst", sym))
 
-    parallel_results = await asyncio.gather(*tasks)
+    if tasks:
+        parallel_results = await asyncio.gather(*tasks)
+    else:
+        parallel_results = []
 
-    # 收集并打印
+
+    # 收集并构建基础会议上下文
     ta_bucket: Dict[str, Dict[str, Any]] = {}
+    base_context = meeting_context_header
+
     for (role, sym), res in zip(task_tags, parallel_results):
         content = res.get("content", f"{role} returned no content.")
-        if role == "Lead Technical Analyst":
-            ta_bucket[sym] = res
-            print(f"[TA:{sym}] responded:\n{content}\n")
-        else:
+        if role == "Market Analyst":
             final_reports[role] = res
+            base_context += f"\n\n## Report from Market Analyst:\n{content}"
             print(f"[{role}] responded:\n{content}\n")
-
-    # 2) 串行：拼接会议上下文 → Risk
-    meeting_context = meeting_context_header
-
-    if "Market Analyst" in final_reports:
-        meeting_context += f"\n\n## Report from Market Analyst:\n{final_reports['Market Analyst'].get('content','')}"
-    if "Position Manager" in final_reports:
-        meeting_context += f"\n\n## Report from Position Manager:\n{final_reports['Position Manager'].get('content','')}"
-
-    for sym in ta_symbols:
-        if sym in ta_bucket:
-            meeting_context += f"\n\n## Report from Lead Technical Analyst ({sym}):\n{ta_bucket[sym].get('content','')}"
-
+        elif role == "Lead Technical Analyst":
+            ta_bucket[sym] = res
+            base_context += f"\n\n## Report from Lead Technical Analyst ({sym}):\n{content}"
+            print(f"[TA:{sym}] responded:\n{content}\n")
+    
     final_reports["Lead Technical Analyst"] = ta_bucket
 
-    # 3) Risk（一次）
-    if risk_cfg:
-        risk_result = await _analyze_agent(
-            risk_cfg,
-            user_message=f"""{meeting_context}
+
+    # ------------------ NEW: STAGE 2 (Sequential Position Manager) ------------------
+    # PM 在 TA 和 News 之后运行，并接收他们的报告
+    if pm_cfg:
+        pm_result = await _analyze_agent(
+            pm_cfg,
+            user_message=f"""{base_context}
 
 # Your Task:
-Using the above reports, screen all candidate symbols at once.
+Based on the market and technical reports above, review existing holdings and open orders.
+Propose a clear action plan, including any dynamic adjustments based on the new TA.
 """,
         )
+        final_reports["Position Manager"] = pm_result
+        print(f"[Position Manager] responded:\n{pm_result.get('content','')}\n")
+
+    # ------------------ NEW: STAGE 3 & 4 (Sequential Risk -> CTO) ------------------
+    # 构建包含 PM 智能建议的完整上下文
+    full_context = base_context
+    if "Position Manager" in final_reports:
+        full_context += f"\n\n## Report from Position Manager:\n{final_reports['Position Manager'].get('content','')}"
+
+    # Risk（一次）
+    if risk_cfg:
+        risk_result = await _analyze_agent(risk_cfg, user_message=f"{full_context}\n\n# Your Task:\nUsing all the above reports, screen candidate symbols.")
         final_reports["Risk Manager"] = risk_result
         print(f"[Risk Manager] responded:\n{risk_result.get('content','')}\n")
 
-    # 4) CTO（一次）
+    # CTO（一次）
     if cto_cfg:
-        cto_result = await _analyze_agent(
-            cto_cfg,
-            user_message=f"""{meeting_context}
+        final_context_for_cto = full_context
+        if "Risk Manager" in final_reports:
+            final_context_for_cto += f"\n\n## Report from Risk Manager:\n{final_reports.get('Risk Manager', {}).get('content','')}"
 
-## Report from Risk Manager:
-{final_reports.get('Risk Manager', {}).get('content','')}
-
-# Your Task:
-Make the final decision (approve at most ONE plan or NO TRADE) and provide an actionable plan if any.
-""",
-        )
+        cto_result = await _analyze_agent(cto_cfg, user_message=f"{final_context_for_cto}\n\n# Your Task:\nMake the final decision and provide an actionable plan.")
         final_reports["Chief Trading Officer"] = cto_result
         print(f"[Chief Trading Officer] responded:\n{cto_result.get('content','')}\n")
 
+
     print("--- Trading Strategy Meeting Ended ---")
 
-    # 入库
     try:
         _store_analysis_results(final_reports)
     except Exception as e:
@@ -222,7 +177,7 @@ Make the final decision (approve at most ONE plan or NO TRADE) and provide an ac
 
     return final_reports
 
-# --- 保留您原有的并行执行函数，以备不时之需 ---
+# --- The rest of the file remains the same ---
 
 async def _run_single_agent(cfg: Dict[str, Any]) -> Dict[str, Any]:
     scheduler = _build_scheduler(cfg["tools"])

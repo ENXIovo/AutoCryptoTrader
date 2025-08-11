@@ -95,23 +95,6 @@ class AddOrderRequest(BaseModel):
             return None
         return ",".join(v) if isinstance(v, list) else v
 
-
-# -- AddOrder Response --
-class OrderDescr(BaseModel):
-    order: str
-    close: Optional[str] = None
-
-
-class AddOrderResult(BaseModel):
-    txid: List[str]
-    descr: OrderDescr
-
-
-class AddOrderResponse(BaseModel):
-    error: List[str]
-    result: AddOrderResult
-
-
 # -------- Amend Order --------
 class AmendOrderRequest(BaseModel):
     """
@@ -129,15 +112,6 @@ class AmendOrderRequest(BaseModel):
     deadline: Optional[str] = None
 
 
-class AmendOrderResult(BaseModel):
-    amend_id: str
-
-
-class AmendOrderResponse(BaseModel):
-    error: List[str]
-    result: AmendOrderResult
-
-
 # -------- Cancel Order --------
 class CancelOrderRequest(BaseModel):
     nonce: Optional[int] = None
@@ -145,12 +119,38 @@ class CancelOrderRequest(BaseModel):
     cl_ord_id: Optional[str] = None
     userref: Optional[int] = None            # 支持批量按 userref 撤单
 
+class TradeStatus(str, Enum):
+    PENDING = "PENDING"              # 计划已创建，等待执行
+    ACTIVE = "ACTIVE"                # 初始订单成交，止损已挂，正在监控TP
+    TP1_HIT = "TP1_HIT"              # 已触发第一止盈，剩余部分仍在监控
+    CLOSING = "CLOSING"              # 正在平仓
+    CLOSED = "CLOSED"                # 已完成
 
-class CancelOrderResult(BaseModel):
-    count: int
-    pending: Optional[bool] = False
+class TakeProfitTarget(BaseModel):
+    price: float
+    percentage_to_sell: float = Field(..., gt=0, le=100, description="卖出仓位的百分比 (1-100)")
+    is_hit: bool = False
 
+class TradePlan(BaseModel):
+    """
+    定义一个完整的交易计划，将作为Celery任务的输入
+    """
+    symbol: str
+    side: OrderSide
+    entry_price: float
+    position_size: float
+    stop_loss_price: float
+    take_profits: List[TakeProfitTarget] # 支持多级止盈
 
-class CancelOrderResponse(BaseModel):
-    error: List[str]
-    result: CancelOrderResult
+    # 包含一些元数据
+    trade_grade: str = "B-Grade"
+    cl_ord_id: Optional[str] = Field(None, description="自定义的客户端ID，用于跟踪")
+
+class TradeLedgerEntry(TradePlan):
+    """
+    储存在Redis中的交易台账，继承自交易计划，并增加状态字段
+    """
+    status: TradeStatus = TradeStatus.PENDING
+    entry_txid: Optional[str] = None
+    stop_loss_txid: Optional[str] = None
+    remaining_size: float # 追踪剩余仓位数量
