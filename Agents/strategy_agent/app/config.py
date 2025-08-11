@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     
     analysis_results_key: str = Field("analysis_results", env="ANALYSIS_RESULTS_KEY")
     
-    trade_universe_json: List[str] = Field(None, env="TRADE_UNIVERSE_JSON")
+    trade_universe_json: str | None = Field('["BTC"]', env="TRADE_UNIVERSE_JSON")
 
     class Config:
         env_file = ".env"
