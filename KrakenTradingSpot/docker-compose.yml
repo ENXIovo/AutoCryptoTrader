@@ -9,27 +9,18 @@ services:
     container_name: kraken-api
     ports:
       - "8100:8100"
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
-  kraken-celery-worker:
+  kraken-ws-listener:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.tasks worker --loglevel=info
-    depends_on:
-      redis:
-        condition: service_healthy
+    command: python -m app.ws_listener
     restart: unless-stopped
 
-  celery-beat-kraken:
+  stream-consumer:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.tasks beat --loglevel=info
-    depends_on:
-      redis:
-        condition: service_healthy
+    command: python -m app.stream_consumer
     restart: unless-stopped

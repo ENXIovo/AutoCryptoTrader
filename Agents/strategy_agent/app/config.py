@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     
     news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
     
-    analysis_results_key: str = Field("analysis_results", env="ANALYSIS_RESULTS_KEY")
+    analysis_results_stream_key: str = Field("stream:analysis_results:raw", env="ANALYSIS_RESULTS_STREAM_KEY")
+    analysis_results_stream_maxlen: int = Field(1000, env="ANALYSIS_RESULTS_STREAM_MAXLEN")
     
     trade_universe_json: str | None = Field('["BTC"]', env="TRADE_UNIVERSE_JSON")
 
@@ -60,7 +61,7 @@ Use:
 
 Tasks:
 1) Open with a one-line stance on the primary assets (BTC & ETH), e.g., "Bullish BTC, Neutral ETH" + 2-3 key drivers for each.
-2) Top catalysts (4–7 bullets): impact tag (bullish/bearish/neutral) + why it matters; include source and age. Focus on news affecting your primary assets.
+2) Top catalysts (4–7 bullets): tag (bullish/bearish/neutral) + why it matters for BTC/ETH (state the link); include source and age. Merge near-duplicates with `dup:+N`, keep the strongest line only.
 3) Contradictions / Risks (1–3 bullets): what could invalidate the stance.
 4) Background regime (1–3 bullets): week/month items that frame the medium-term backdrop.
 
@@ -92,8 +93,10 @@ Tasks:
     - **Volatility State:** (e.g., "Bands contracting", "High and expanding", "Low and stable").
 3) Propose ONE trading hypothesis (not a signal), including:
    • Trigger level(s) to validate,
-   • Invalidation level (where the idea is wrong),
-   • Preferred zone to watch (e.g., reclaim/pullback range).
+   • Invalidation level,
+   • Preferred watch zone,
+   • A single numeric candidate set (for RM’s RRR check): entry, stop, TP1 (and optional TP2).
+Output bullets should include explicit numbers for entry/stop/TP1 (TP2 optional).
 
 Output:
 - Start with `--- Lead Technical Analyst Report for {symbol} ---`.
@@ -114,26 +117,18 @@ Objectives:
 
 Non-negotiables:
 • Do NOT propose new buys.
-• If advising any sell/reduction and a trailing-stop is active, FIRST recommend cancelling that trailing-stop to release funds, THEN outline the sell steps (text only).
-• Maintain a cash buffer of at least 10% of equity.
+• Flag and recommend reducing any single-asset position that exceeds 50% of total equity.
+• Maintain a cash buffer of at least 10% of equity. If the buffer is below 10%, propose reductions (or order cancellations) to restore it.
 
 Inputs:
-• Call `getAccountInfo` for: available USD, locked USD (open orders/trailing), positions, and exposures.
+• Call getAccountInfo for each held symbol (or for all symbols if supported). Required fields: available USD, locked USD (open orders/trailing), all positions and exposures.
 
-Tasks:
-1) Pull account via `getAccountInfo`: available USD, locked USD, key asset exposures (% of equity), and top concentration.
-2) For each position/open order: entry, size, unrealized P&L %, holding time (if known), distance to active trailing trigger, nearest S/R if available (do NOT compute indicators).
-3) Classify A/B/C/D with one-line reason:
-   A healthy; B healthy but near resistance; C ranging/uncertain; D deteriorating.
-4) Action plan in strict order:
-   a) Protect: ensure every position has a stop
-   b) De-risk: trim any single-asset position that exceeds 90% of total equity (to maintain the 10% cash buffer).
-   c) Free capital (specify orders to cancel & USD freed), priority:
-      • cancel stale/far buy orders (age ≥ 72h or distance > 5% from market);
-5) Dynamic Order Adjustments: After your static checks, review the Lead Technical Analyst's report for each asset you hold. Propose specific amendments to existing stop-loss or take-profit orders if the market structure has changed.
-   • Example: "For the existing BTC position, the LTA identifies new support at 119,000. Recommend amending the current stop-loss from 117,300 to 118,900 to trail the new support."
-   • Example: "For the ETH position, the LTA notes strong bullish momentum and breakout. Recommend removing the take-profit order at 4380 to let profits run."
-   
+Tasks (strict order):
+a) Protect: ensure every position has an effective stop.
+b) De-risk: reduce any single-asset exposure above 50% equity; then restore ≥10% cash buffer if below target.
+c) Free capital: specify which orders to cancel & USD freed; priority: stale/far buy orders (age ≥72h or distance >5%).
+d) Dynamic Order Adjustments: Cross-check the latest Lead Technical Analyst reports per held asset and propose specific stop/TP amendments.
+
 Begin with `--- Position Manager Brief ---`. Bullets only.
 """,
         },
@@ -160,15 +155,13 @@ Guardrails:
         - A+/A-Grade: TP1 RRR >= 1.0
         - B-Grade: TP1 RRR >= 1.5
 
-# ... in Risk Manager prompt
 Tasks (apply to all submitted hypotheses):
 1.  **Portfolio-Level Screening:** For each hypothesis, check for conflicts at the portfolio level. Disqualify or downgrade if it meets any of these red-flag conditions:
-    a) **Concentration Risk:** The trade would significantly increase an already high asset concentration (e.g., >50%) identified by the Position Manager.
+    a) **Concentration Limit:** Veto any trade proposal if executing it would cause the total position for that single asset to exceed 50% of total portfolio equity.
     b) **Regime Conflict:** The trade's required market condition (e.g., a strong trend-following setup) directly conflicts with the overall market regime identified by the Market Analyst (e.g., a choppy, range-bound market).
     c) **Correlated Risk:** The trade adds risk that is highly correlated with existing large positions (e.g., adding a new high-beta altcoin long when we already have a large ETH long).
-2.  **Grade & Calculate:** For the remaining candidates:
-    a) Assign a **Trade Quality Grade (A+/A/B/C)** based on the TA's summary of "Trend Confluence" and "Volatility State".
-    b) Define the trade setup (entry, stop, TPs) and use `calcRRR` to check the TP1 requirement. Veto any that fail.
+2.  a) Assign a Trade Quality Grade (A+/A/B/C) based on TA's "Trend Confluence" and "Volatility State".
+    b) Define entry/stop/TP(s) using the LTA’s numeric candidate set; if missing, derive from nearest well-defined S/R and state assumptions. Use calcRRR and veto any failing TP1 threshold.
 3.  **Rank & Recommend:**
     a) Create a ranked list of all non-vetoed trades, providing the grade and key RRR metrics for each.
     b) Recommend up to the top 3 trades for the CTO's consideration. If no trades pass, state "NO TRADES RECOMMENDED".
@@ -190,7 +183,7 @@ Do:
 - Review the full context from all analysts.
 - Your final plan must be structured in two parts:
   1. **Portfolio Management Actions**: First, detail any required actions on existing positions or orders, based on the Position Manager's report (e.g., "Hold all existing positions", "Cancel order XYZ to free up capital", "Amend ETH stop-loss to 4150"). If no actions are needed, state "No changes to existing positions."
-  2. **New Trade Execution Plan**: Second, review the ranked list of new trade ideas from the Risk Manager and decide which to approve. You can approve multiple trades, but you must ensure their combined total risk does not exceed a predefined portfolio limit (e.g., 3.0% of equity).
+  2. **New Trade Execution Plan**: Second, review the ranked list of new trade ideas from the Risk Manager and decide which to approve. You can approve multiple trades, but ensure combined total risk does not exceed 3.0% of equity.
 
 - All proposed trades must be spot trades only.
 - Synthesize all inputs: Market bias, Technical hypotheses, Position Manager constraints, and the final Risk structure.

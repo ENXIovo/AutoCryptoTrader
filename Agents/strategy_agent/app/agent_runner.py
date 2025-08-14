@@ -34,8 +34,8 @@ def _build_scheduler(tools: list[str]) -> Scheduler:
 def _store_analysis_results(report_data: Dict[str, Any]) -> None:
     """
     将本次会议的聚合结果写入 Redis：
-    - 使用 Hash 结构：field=UTC 时间戳，value=JSON 报告
-    - 键名由 settings.analysis_results_key 指定
+    - 使用 Redis Stream（XADD），天然按时间有序，便于按最新读取
+    - 键名由 settings.analysis_results_stream_key 指定
     """
     # 选用与你 Celery 一致的 Redis，优先 result_backend，没有就用 broker
     r = redis.Redis.from_url(settings.redis_url)
@@ -48,8 +48,24 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
              for k, v in report_data.items()},
             ensure_ascii=False
         )
-    # Hash: HSET analysis_results <ts> <json>
-    r.hset(settings.analysis_results_key, ts, payload)
+    # 写入 Stream，自动按时间有序，支持 MAXLEN 修剪
+    try:
+        maxlen = int(getattr(settings, "analysis_results_stream_maxlen", 0))
+    except Exception:
+        maxlen = 0
+    xadd_kwargs = {}
+    if maxlen and maxlen > 0:
+        xadd_kwargs["maxlen"] = maxlen
+        xadd_kwargs["approximate"] = True  # 使用近似修剪以提高性能
+
+    r.xadd(
+        name=settings.analysis_results_stream_key,
+        fields={
+            "ts": ts,
+            "payload": payload,
+        },
+        **xadd_kwargs,
+    )
 
 
 # REMOVED: 本地的 _get_trade_universe 函数已被删除，因为它现在从 config.py 导入
