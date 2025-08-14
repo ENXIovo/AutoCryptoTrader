@@ -48,13 +48,12 @@ class CloseOrder(BaseModel):
 
 
 class AddOrderRequest(BaseModel):
-    # ① 允许「额外字段」如 close[ordertype]，否则会在 model_dump 时被丢弃
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     # ─────── metadata ───────
     nonce: Optional[int] = None
     userref: Optional[int] = None
-    cl_ord_id: Optional[str] = None
+
 
     # ─────── main params ───────
     pair: str = Field(..., example="XBTUSD", pattern=r"^[A-Z]{4,}$")
@@ -75,7 +74,7 @@ class AddOrderRequest(BaseModel):
     starttm: Optional[str] = None
     expiretm: Optional[str] = None
     deadline: Optional[str] = None
-    validate: Optional[bool] = None
+    validate_only: Optional[bool] = Field(None, alias="validate")
 
     # ─────── conditional close ───────
     close_ordertype: Optional[OrderType] = Field(
@@ -95,6 +94,7 @@ class AddOrderRequest(BaseModel):
             return None
         return ",".join(v) if isinstance(v, list) else v
 
+
 # -------- Amend Order --------
 class AmendOrderRequest(BaseModel):
     """
@@ -102,7 +102,6 @@ class AmendOrderRequest(BaseModel):
     """
     nonce: Optional[int] = None
     txid: Optional[str] = None
-    cl_ord_id: Optional[str] = None
 
     order_qty: Optional[str] = None          # 新数量
     display_qty: Optional[str] = None        # 冰山可见量
@@ -116,7 +115,6 @@ class AmendOrderRequest(BaseModel):
 class CancelOrderRequest(BaseModel):
     nonce: Optional[int] = None
     txid: Union[None, str, int] = None       # Kraken 文档允许 str 或 int
-    cl_ord_id: Optional[str] = None
     userref: Optional[int] = None            # 支持批量按 userref 撤单
 
 class TradeStatus(str, Enum):
@@ -142,15 +140,54 @@ class TradePlan(BaseModel):
     stop_loss_price: float
     take_profits: List[TakeProfitTarget] # 支持多级止盈
 
-    # 包含一些元数据
-    trade_grade: str = "B-Grade"
-    cl_ord_id: Optional[str] = Field(None, description="自定义的客户端ID，用于跟踪")
+    # 元数据/分组
+    userref: Optional[int] = Field(None, description="分组标识（优先使用）")
+
+    # 入场细节（对齐 AddOrder，精简到必要字段）
+    entry_ordertype: OrderType = OrderType.market
+    entry_price2: Optional[float] = None
+    oflags: Optional[Union[str, List[str]]] = None
+    timeinforce: Optional[TimeInForce] = None
+    trigger: Optional[TriggerType] = None
 
 class TradeLedgerEntry(TradePlan):
     """
-    储存在Redis中的交易台账，继承自交易计划，并增加状态字段
+    储存在 Redis 的交易台账条目。按 trade_id 唯一标识，支持同一 symbol 多笔并行。
     """
+    trade_id: str
     status: TradeStatus = TradeStatus.PENDING
     entry_txid: Optional[str] = None
     stop_loss_txid: Optional[str] = None
-    remaining_size: float # 追踪剩余仓位数量
+    remaining_size: float  # 追踪剩余仓位数量
+
+
+# -------- Stream 指令模型 --------
+class StreamAction(str, Enum):
+    add = "add"
+    amend = "amend"
+    cancel = "cancel"
+
+class StreamMessage(BaseModel):
+    action: StreamAction
+    symbol: Optional[str] = None
+    userref: Optional[int] = None
+    # 针对 add
+    plan: Optional[TradePlan] = None
+    # 针对 amend/cancel（优先使用 Kraken txid / order_id）
+    order_id: Optional[str] = None  # Kraken 订单 txid（推荐）
+    trade_id: Optional[str] = None  # 兼容旧标识（内部台账ID）
+    # amend 可选字段
+    new_stop_loss_price: Optional[float] = None
+    new_take_profits: Optional[List[TakeProfitTarget]] = None
+
+
+# -------- 精简订单台账（Stream 驱动场景） --------
+class MinimalTradeEntry(BaseModel):
+    group_id: str
+    symbol: str
+    status: str = "PENDING"
+    entry_txid: Optional[str] = None
+    stop_loss_txid: Optional[str] = None
+    stop_loss_trigger_price: Optional[float] = None
+    remaining_size: Optional[float] = None
+    last_event_at: Optional[float] = None

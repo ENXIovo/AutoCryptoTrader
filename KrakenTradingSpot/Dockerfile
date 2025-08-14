@@ -1,6 +1,6 @@
 # dockerfile
 
-# 阶段 2：构建应用程序镜像
+# 应用镜像：依赖已预构建的基础镜像标签 kraken-base
 FROM kraken-base AS app
 
 # 复制应用程序代码到容器中

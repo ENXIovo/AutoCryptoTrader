@@ -1,5 +1,7 @@
 fastapi
 uvicorn
-requests
 pydantic
 pydantic-settings
+redis
+httpx
+websockets
