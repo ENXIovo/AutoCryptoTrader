@@ -91,21 +91,25 @@ async def run_trade(plan_dict: Dict[str, Any]) -> None:
         entry_txid = await add_order_service(main_order_payload)
         logger.info(f"[TASK] Main order placed symbol={plan.symbol} entry_txid={entry_txid}")
 
-        if not await wait_for_order_closed(entry_txid):
-            raise Exception(f"Main order {entry_txid} did not close in time.")
-        logger.info(f"[TASK] Main order confirmed closed symbol={plan.symbol} entry_txid={entry_txid}")
-
-        # 2) 原子更新台账（SL 将由 Kraken 条件平仓自动触发；txid 由 ws_listener 归档）
-        def update_after_fill(trade: TradeLedgerEntry):
-            trade.status = TradeStatus.ACTIVE
+        # 立即写入 entry_txid，便于上游通过 open_orders 标记 'entry' 角色
+        def _set_entry_txid(trade: TradeLedgerEntry):
             trade.entry_txid = entry_txid
             return trade
+        ledger.update_trade_atomically(plan.symbol, _set_entry_txid)
 
-        ledger.update_trade_atomically(plan.symbol, update_after_fill)
+        # 市价单：通常即时成交，可等待 closed 确认并转 ACTIVE；限价单：不等待，由 WS 事件推动
+        if plan.entry_ordertype == OrderType.market:
+            if not await wait_for_order_closed(entry_txid):
+                raise Exception(f"Main order {entry_txid} did not close in time.")
+            logger.info(f"[TASK] Main order confirmed closed symbol={plan.symbol} entry_txid={entry_txid}")
 
-        # 3) 启动持续监控（后台任务）：
-        #    - 打点行情，价格到达 TP1/TP2 时，按照台账百分比拆单并用市价平掉对应仓位
-        asyncio.create_task(monitor_trade(trade_id))
+            def update_after_fill(trade: TradeLedgerEntry):
+                trade.status = TradeStatus.ACTIVE
+                return trade
+            ledger.update_trade_atomically(plan.symbol, update_after_fill)
+
+            # 市价单直接启动监控
+            asyncio.create_task(monitor_trade(trade_id))
 
     except Exception as exc:
         logger.info(f"[TASK] CRITICAL ERROR during trade setup symbol={plan.symbol} err={exc}")

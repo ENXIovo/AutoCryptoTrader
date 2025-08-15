@@ -176,8 +176,11 @@ class StreamMessage(BaseModel):
     # 针对 amend/cancel（优先使用 Kraken txid / order_id）
     order_id: Optional[str] = None  # Kraken 订单 txid（推荐）
     trade_id: Optional[str] = None  # 兼容旧标识（内部台账ID）
-    # amend 可选字段
+    # amend 参数扩展
+    new_entry_price: Optional[float] = None
     new_stop_loss_price: Optional[float] = None
+    new_tp1_price: Optional[float] = None
+    new_tp2_price: Optional[float] = None
     new_take_profits: Optional[List[TakeProfitTarget]] = None
 
 

@@ -9,8 +9,8 @@ from typing import Any, Dict, Optional
 from app.config import settings
 from app.kraken_client import KrakenClient
 from app.ledger import ledger_instance as ledger
-from app.models import TradeLedgerEntry, TradeStatus, OrderSide, OrderType, AddOrderRequest
-from app.services import add_order_service
+from app.models import TradeLedgerEntry, TradeStatus, OrderSide, OrderType, AddOrderRequest, AmendOrderRequest
+from app.services import add_order_service, amend_order_service
 logger = logging.getLogger(__name__)
 
 
@@ -153,15 +153,91 @@ class KrakenWSListener:
             if descr.get("pair"):
                 # descr.pair 可能是 WSName，例如 XBT/USD → 我们的台账用 altname，但 symbol 字段一致
                 symbol = (descr.get("pair") or "").replace("/", "")
-            # 回填逻辑（宽松）：找到第一个 ACTIVE/TP1_HIT 且 stop_loss_txid 为空的 trade
-            if symbol:
-                for t in ledger.get_all_trades():
-                    if t.symbol == symbol and t.stop_loss_txid in (None, "") and t.status in (TradeStatus.ACTIVE, TradeStatus.TP1_HIT):
-                        def _upd(tr: TradeLedgerEntry):
-                            tr.stop_loss_txid = txid
-                            return tr
-                        ledger.update_trade_atomically(t.symbol, _upd)
-                        return
+
+            if not symbol:
+                return
+
+            # 提取可用于匹配的元信息
+            uref = order.get("userref")
+            side_str = (descr.get("type") or order.get("type") or "").lower()
+            try:
+                vol_f = float(order.get("vol") or 0.0)
+            except Exception:
+                vol_f = None
+            # SL 价格（若存在）
+            try:
+                stop_price = None
+                if order.get("stopprice") is not None:
+                    stop_price = float(order.get("stopprice"))
+                elif order.get("price") is not None:
+                    stop_price = float(order.get("price"))
+                elif descr.get("price") is not None:
+                    stop_price = float(descr.get("price"))
+            except Exception:
+                stop_price = None
+
+            # 生成候选 trades：同 symbol，状态 ACTIVE/TP1_HIT，且当前尚未绑定 SL txid
+            candidates: list[TradeLedgerEntry] = [
+                t for t in ledger.get_all_trades()
+                if t.symbol == symbol and (t.stop_loss_txid in (None, "")) and (t.status in (TradeStatus.ACTIVE, TradeStatus.TP1_HIT))
+            ]
+            if not candidates:
+                return
+
+            # 1) 首选 userref 匹配
+            if uref is not None:
+                try:
+                    uref_str = str(uref)
+                    by_uref = [t for t in candidates if str(getattr(t, "userref", None)) == uref_str]
+                    if by_uref:
+                        candidates = by_uref
+                except Exception:
+                    pass
+
+            # 2) 方向校验（SL 单方向应与持仓方向相反）
+            if side_str in ("buy", "sell"):
+                from app.models import OrderSide as _OS
+                opposite = _OS.sell if side_str == "buy" else _OS.buy
+                by_side = [t for t in candidates if getattr(t, "side", None) == opposite]
+                if by_side:
+                    candidates = by_side
+
+            # 3) 体量/价格近似（可选增强，尽量不误绑）
+            def _is_close(a: float, b: float, rel: float = 1e-6) -> bool:
+                try:
+                    return abs(float(a) - float(b)) <= rel * max(1.0, abs(float(b)))
+                except Exception:
+                    return False
+
+            scored: list[tuple[int, TradeLedgerEntry]] = []
+            for t in candidates:
+                score = 0
+                if vol_f is not None and _is_close(vol_f, getattr(t, "remaining_size", None) or 0.0):
+                    score += 1
+                if stop_price is not None and _is_close(stop_price, getattr(t, "stop_loss_price", None) or 0.0):
+                    score += 1
+                scored.append((score, t))
+
+            # 选择评分最高者
+            t_selected = max(scored, key=lambda x: x[0])[1] if scored else candidates[0]
+
+            def _upd(tr: TradeLedgerEntry):
+                tr.stop_loss_txid = txid
+                return tr
+            ledger.update_trade_atomically(t_selected.symbol, _upd)
+
+            # 新止损单生成后，若其价格与台账不一致，则立即改单到台账价
+            try:
+                if stop_price is not None and abs(float(t_selected.stop_loss_price) - float(stop_price)) > 1e-9:
+                    await amend_order_service(AmendOrderRequest(txid=txid, trigger_price=str(float(t_selected.stop_loss_price))))
+                    import logging as _logging
+                    _logging.getLogger(__name__).info(
+                        f"[WS] Amended newly created SL price for {t_selected.symbol}: {stop_price} -> {t_selected.stop_loss_price}"
+                    )
+            except Exception as e:
+                import logging as _logging
+                _logging.getLogger(__name__).info(f"[WS] Failed to amend new SL to ledger price for {t_selected.symbol}: {e}")
+            return
         except Exception:
             return
 
