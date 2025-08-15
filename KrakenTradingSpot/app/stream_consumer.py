@@ -8,7 +8,7 @@ import os
 from app.config import settings
 from app.ledger import ledger_instance as ledger
 from app.models import StreamMessage, StreamAction, TradeLedgerEntry, TradeStatus, AddOrderRequest, AmendOrderRequest, CancelOrderRequest
-from app.tasks import run_trade, cancel_trade, amend_order_task
+from app.tasks import run_trade, cancel_trade, amend_order_task, wait_for_order_canceled_or_closed
 from app.services import cancel_order_service
 from app.utils.redis_utils import new_redis, ensure_group, xreadgroup, xack, xautoclaim_stale
 from app.utils.async_utils import ensure_background_event_loop, submit_coro
@@ -125,9 +125,59 @@ def _process(sm: StreamMessage, request_id: str | None) -> None:
         if sm.action == StreamAction.cancel:
             # 优先使用 Kraken order_id (txid) 直接撤单；否则退回内部 trade_id 逻辑
             if sm.order_id:
-                # 直接按 txid 撤单
-                submit_coro(loop, cancel_order_service(CancelOrderRequest(txid=sm.order_id)))
-                logger.info(f"[STREAM] Scheduled direct cancel by order_id req={request_id} order_id={sm.order_id}")
+                # 直接按 txid 撤单，并在确认后按规则清理台账
+                async def _cancel_and_maybe_cleanup(order_id: str) -> None:
+                    try:
+                        await cancel_order_service(CancelOrderRequest(txid=order_id))
+                        _ = await wait_for_order_canceled_or_closed(order_id)
+                    except Exception:
+                        pass
+                    # 关联台账
+                    trade = None
+                    canceled_role = None
+                    for t in ledger.get_all_trades():
+                        if getattr(t, "entry_txid", None) == order_id:
+                            trade = t
+                            canceled_role = "entry"
+                            break
+                        if getattr(t, "stop_loss_txid", None) == order_id:
+                            trade = t
+                            canceled_role = "stop_loss"
+                            break
+                    if not trade:
+                        return
+                    # 更新绑定 txid
+                    if canceled_role == "entry":
+                        def _upd_entry(tr: TradeLedgerEntry):
+                            tr.entry_txid = None
+                            return tr
+                        ledger.update_trade_by_id_atomically(trade.trade_id, _upd_entry)
+                    elif canceled_role == "stop_loss":
+                        def _upd_sl(tr: TradeLedgerEntry):
+                            tr.stop_loss_txid = None
+                            return tr
+                        ledger.update_trade_by_id_atomically(trade.trade_id, _upd_sl)
+
+                    # 清理规则：
+                    # - 若取消的是止损且 remaining_size == 0 → 直接 CLOSED 并删除
+                    # - 或两类 txid 均为空（没有任何 open 订单）且状态为 PENDING/ACTIVE/TP1_HIT → 关闭并删除
+                    t2 = ledger.get_trade_by_id(trade.trade_id)
+                    if not t2:
+                        return
+                    should_close = False
+                    if canceled_role == "stop_loss" and (getattr(t2, "remaining_size", 0.0) or 0.0) <= 1e-12:
+                        should_close = True
+                    if (getattr(t2, "entry_txid", None) in (None, "")) and (getattr(t2, "stop_loss_txid", None) in (None, "")):
+                        should_close = True
+                    if should_close:
+                        def _mark_closed(tr: TradeLedgerEntry):
+                            tr.status = TradeStatus.CLOSED
+                            return tr
+                        ledger.update_trade_by_id_atomically(trade.trade_id, _mark_closed)
+                        ledger.delete_trade_by_id(trade.trade_id)
+
+                submit_coro(loop, _cancel_and_maybe_cleanup(sm.order_id))
+                logger.info(f"[STREAM] Scheduled direct cancel by order_id with cleanup req={request_id} order_id={sm.order_id}")
                 return
             if sm.trade_id:
                 trade = ledger.get_trade_by_id(sm.trade_id)
@@ -138,21 +188,77 @@ def _process(sm: StreamMessage, request_id: str | None) -> None:
             raise ValueError("cancel requires order_id or trade_id")
 
         if sm.action == StreamAction.amend:
-            # 若直接给出待改订单的 Kraken txid，则优先做直改（例如改 SL 的数量/触发价）
+            # 1) 直接改交易所订单 + 同步更新台账（四项可一次性修改）
             if sm.order_id:
-                if sm.new_stop_loss_price is None:
-                    logger.info(f"[STREAM] amend ignored: no new_stop_loss_price for direct order amend order_id={sm.order_id}")
-                    return
-                submit_coro(
-                    loop,
-                    amend_order_task(
-                        AmendOrderRequest(
-                            txid=sm.order_id,
-                            trigger_price=str(sm.new_stop_loss_price)
-                        ).model_dump()
+                # 先尝试找关联台账（entry 或 SL），便于同时更新 SL/TP 到台账
+                linked_trade = None
+                for t in ledger.get_all_trades():
+                    if t.entry_txid == sm.order_id or t.stop_loss_txid == sm.order_id:
+                        linked_trade = t
+                        break
+
+                # 入场价（仅限未成交限价单）
+                if sm.new_entry_price is not None:
+                    submit_coro(
+                        loop,
+                        amend_order_task(
+                            AmendOrderRequest(
+                                txid=sm.order_id,
+                                limit_price=str(sm.new_entry_price)
+                            ).model_dump()
+                        )
                     )
-                )
-                logger.info(f"[STREAM] Scheduled direct amend by order_id req={request_id} order_id={sm.order_id} new_sl={sm.new_stop_loss_price}")
+                    logger.info(f"[STREAM] Direct amend entry price req={request_id} order_id={sm.order_id} new_entry={sm.new_entry_price}")
+
+                # 止损触发价：若 order_id 正是 SL 单 → 直改交易所；否则仅更新台账（入场未成阶段）
+                if sm.new_stop_loss_price is not None:
+                    if linked_trade and linked_trade.stop_loss_txid == sm.order_id:
+                        submit_coro(
+                            loop,
+                            amend_order_task(
+                                AmendOrderRequest(
+                                    txid=sm.order_id,
+                                    trigger_price=str(sm.new_stop_loss_price)
+                                ).model_dump()
+                            )
+                        )
+                        logger.info(f"[STREAM] Direct amend stop-loss req={request_id} order_id={sm.order_id} new_sl={sm.new_stop_loss_price}")
+                    # 同步更新台账（无论是否直改了交易所），确保后续重挂或展示一致
+                    if linked_trade:
+                        def _upd_sl(tr: TradeLedgerEntry):
+                            tr.stop_loss_price = float(sm.new_stop_loss_price)
+                            return tr
+                        ledger.update_trade_by_id_atomically(linked_trade.trade_id, _upd_sl)
+
+                # TP1/TP2：仅更新台账价格
+                if linked_trade and any(v is not None for v in [sm.new_tp1_price, sm.new_tp2_price]):
+                    def _upd_tp(tr: TradeLedgerEntry):
+                        # 舍弃 TP2：若只提供 new_tp2_price 且当前只有一个 TP，则忽略新增第二档
+                        if sm.new_tp1_price is not None and len(tr.take_profits) >= 1:
+                            tr.take_profits[0].price = float(sm.new_tp1_price)
+                        if sm.new_tp2_price is not None and len(tr.take_profits) >= 2:
+                            tr.take_profits[1].price = float(sm.new_tp2_price)
+                        return tr
+                    ledger.update_trade_by_id_atomically(linked_trade.trade_id, _upd_tp)
+                    logger.info(f"[STREAM] Updated ledger TP via order_id req={request_id} trade_id={linked_trade.trade_id} tp1={sm.new_tp1_price} tp2={sm.new_tp2_price}")
+
+                # 若本次请求同时带了 trade_id，则无论是否找到 linked_trade，仍对指定 trade_id 做一次台账更新（保证一键改四项）
+                if sm.trade_id:
+                    def _upd_all(tr: TradeLedgerEntry):
+                        # entry 价仅在 PENDING 时更新
+                        if sm.new_entry_price is not None and tr.status == TradeStatus.PENDING:
+                            tr.entry_price = float(sm.new_entry_price)
+                        if sm.new_stop_loss_price is not None:
+                            tr.stop_loss_price = float(sm.new_stop_loss_price)
+                        if sm.new_tp1_price is not None and len(tr.take_profits) >= 1:
+                            tr.take_profits[0].price = float(sm.new_tp1_price)
+                        if sm.new_tp2_price is not None:
+                            if len(tr.take_profits) >= 2:
+                                tr.take_profits[1].price = float(sm.new_tp2_price)
+                            # 舍弃新增第二档：不自动创建 TP2
+                        return tr
+                    ledger.update_trade_by_id_atomically(sm.trade_id, _upd_all)
+                    logger.info(f"[STREAM] Also updated ledger by trade_id req={request_id} trade_id={sm.trade_id} entry={sm.new_entry_price} sl={sm.new_stop_loss_price} tp1={sm.new_tp1_price} tp2={sm.new_tp2_price}")
                 return
             if not sm.trade_id:
                 raise ValueError("amend requires order_id or trade_id")
@@ -162,8 +268,15 @@ def _process(sm: StreamMessage, request_id: str | None) -> None:
                 return
             if trade.status == TradeStatus.PENDING:
                 def _upd(t: TradeLedgerEntry):
+                    if sm.new_entry_price is not None:
+                        t.entry_price = float(sm.new_entry_price)
                     if sm.new_stop_loss_price is not None:
                         t.stop_loss_price = sm.new_stop_loss_price
+                    # TP 可单独改价或整体替换
+                    if sm.new_tp1_price is not None and len(t.take_profits) >= 1:
+                        t.take_profits[0].price = float(sm.new_tp1_price)
+                    if sm.new_tp2_price is not None and len(t.take_profits) >= 2:
+                        t.take_profits[1].price = float(sm.new_tp2_price)
                     if sm.new_take_profits is not None:
                         t.take_profits = normalize_take_profits_with_min_notional(
                             original=sm.new_take_profits,

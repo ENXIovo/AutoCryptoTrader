@@ -312,3 +312,43 @@ class KrakenClient:
             return await self._post("/private/GetWebSocketsToken", {})
         except Exception as e:
             return {"error": [str(e)], "result": {}}
+
+    # ---------------------- 账户与订单查询（私有接口） ----------------------
+    async def get_open_orders(self) -> Dict[str, Any]:
+        """OpenOrders: 返回当前未结订单。"""
+        try:
+            return await self._post("/private/OpenOrders", {"trades": True})
+        except Exception as e:
+            return {"error": [str(e)], "result": {}}
+
+    async def get_account_balance(self) -> Dict[str, Any]:
+        try:
+            return await self._post("/private/Balance", {})
+        except Exception as e:
+            return {"error": [str(e)], "result": {}}
+
+    async def get_trade_balance(self, asset: str = "ZUSD") -> Dict[str, Any]:
+        try:
+            return await self._post("/private/TradeBalance", {"asset": asset})
+        except Exception as e:
+            return {"error": [str(e)], "result": {}}
+
+    async def get_trades_history(self, start: Optional[int] = None, end: Optional[int] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"trades": True}
+        if start is not None:
+            payload["start"] = start
+        if end is not None:
+            payload["end"] = end
+        try:
+            return await self._post("/private/TradesHistory", payload)
+        except Exception as e:
+            return {"error": [str(e)], "result": {}}
+
+    async def get_asset_pairs(self) -> Dict[str, Any]:
+        """公共端点获取可交易对。"""
+        try:
+            r = await self.async_client.get(f"{self.base_url}/0/public/AssetPairs")
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": [str(e)], "result": {}}

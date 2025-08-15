@@ -16,6 +16,8 @@ class TradeLedger:
         """
         # 单条交易按 trade_id 存储
         self.trade_hash_key = "trades"
+        # 拆分后的价格/摘要字段（每笔一个独立 Hash）：trades:prices:{trade_id}
+        self.trade_prices_prefix = "trades:prices:"
         # 索引：按标准化交易对（altname）映射到 trade_id 集合
         self.symbol_index_prefix = "index:symbol:"
         try:
@@ -34,6 +36,7 @@ class TradeLedger:
         try:
             self.client.hset(self.trade_hash_key, trade.trade_id, trade.model_dump_json())
             self.client.sadd(self._symbol_index_key(trade.symbol), trade.trade_id)
+            self._write_prices_hash(trade)
             import logging as _logging
             _logging.getLogger(__name__).info(f"Ledger: Wrote/Updated trade {trade.trade_id} for {trade.symbol}")
         except redis.exceptions.RedisError as e:
@@ -80,6 +83,11 @@ class TradeLedger:
             tid = ids[0]
             self.client.hdel(self.trade_hash_key, tid)
             self.client.srem(self._symbol_index_key(symbol), tid)
+            # 删除独立价格 Hash
+            try:
+                self.client.delete(self._prices_key(tid))
+            except Exception:
+                pass
             import logging as _logging
             _logging.getLogger(__name__).info(f"Ledger: Deleted trade {tid} for {symbol}")
             return True
@@ -107,6 +115,11 @@ class TradeLedger:
                 return False
             removed = self.client.hdel(self.trade_hash_key, trade_id)
             self.client.srem(self._symbol_index_key(trade.symbol), trade_id)
+            # 删除独立价格 Hash
+            try:
+                self.client.delete(self._prices_key(trade_id))
+            except Exception:
+                pass
             if removed:
                 import logging as _logging
                 _logging.getLogger(__name__).info(f"Ledger: Deleted trade {trade_id} for {trade.symbol}")
@@ -170,6 +183,8 @@ class TradeLedger:
                 pipe.multi()
                 pipe.hset(self.trade_hash_key, trade_id, updated_trade.model_dump_json())
                 pipe.execute()
+                # 同步独立价格 Hash
+                self._write_prices_hash(updated_trade)
                 
                 import logging as _logging
                 _logging.getLogger(__name__).info(f"Ledger: Atomically updated trade {trade_id} for {symbol}")
@@ -201,6 +216,8 @@ class TradeLedger:
                 pipe.multi()
                 pipe.hset(self.trade_hash_key, trade_id, updated_trade.model_dump_json())
                 pipe.execute()
+                # 同步独立价格 Hash
+                self._write_prices_hash(updated_trade)
                 import logging as _logging
                 _logging.getLogger(__name__).info(f"Ledger: Atomically updated trade {trade_id}")
                 return updated_trade
@@ -216,6 +233,44 @@ class TradeLedger:
     # --- 辅助 ---
     def _symbol_index_key(self, symbol: str) -> str:
         return f"{self.symbol_index_prefix}{symbol}"
+
+    def _prices_key(self, trade_id: str) -> str:
+        return f"{self.trade_prices_prefix}{trade_id}"
+
+    def _write_prices_hash(self, trade: TradeLedgerEntry) -> None:
+        """将常用价格/摘要字段以独立 Hash 形式存入 Redis，便于快速读取。
+        Key: trades:prices:{trade_id}
+        Fields: symbol, status, userref, entry_txid, stop_loss_txid, remaining_size,
+                entry_price, stop_loss_price, tp1_price, tp1_pct, tp2_price, tp2_pct
+        所有值以 str 形式存储（Redis 字符串）。
+        """
+        try:
+            tp1_price = tp1_pct = tp2_price = tp2_pct = ""
+            if trade.take_profits and len(trade.take_profits) >= 1:
+                tp1_price = str(trade.take_profits[0].price)
+                tp1_pct = str(trade.take_profits[0].percentage_to_sell)
+            if trade.take_profits and len(trade.take_profits) >= 2:
+                tp2_price = str(trade.take_profits[1].price)
+                tp2_pct = str(trade.take_profits[1].percentage_to_sell)
+
+            payload = {
+                "symbol": str(trade.symbol),
+                "status": str(trade.status),
+                "userref": str(getattr(trade, "userref", "")),
+                "entry_txid": str(trade.entry_txid or ""),
+                "stop_loss_txid": str(trade.stop_loss_txid or ""),
+                "remaining_size": str(trade.remaining_size),
+                "entry_price": str(trade.entry_price),
+                "stop_loss_price": str(trade.stop_loss_price),
+                "tp1_price": tp1_price,
+                "tp1_pct": tp1_pct,
+                "tp2_price": tp2_price,
+                "tp2_pct": tp2_pct,
+            }
+            self.client.hset(self._prices_key(trade.trade_id), mapping=payload)
+        except Exception:
+            # 不因扩展写入失败而影响主流程
+            pass
 
 # --- 全局单例 ---
 # 创建一个全局唯一的ledger实例，供应用其他部分导入和使用

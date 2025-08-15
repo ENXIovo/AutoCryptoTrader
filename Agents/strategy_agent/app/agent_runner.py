@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import redis
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
 # CHANGED: 导入 get_trade_universe
@@ -87,7 +87,7 @@ async def _analyze_agent(
 
 async def run_agents_in_sequence_async() -> Dict[str, Any]:
     """
-    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO。
+    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO -> Trade Executor。
     """
     print("--- Starting Trading Strategy Meeting (New Workflow) ---")
 
@@ -105,6 +105,7 @@ async def run_agents_in_sequence_async() -> Dict[str, Any]:
     ta_cfg = cfg_by_name.get("Lead Technical Analyst")
     risk_cfg = cfg_by_name.get("Risk Manager")
     cto_cfg = cfg_by_name.get("Chief Trading Officer")
+    trade_exec_cfg = cfg_by_name.get("Trade Executor")
 
     # ------------------ MODIFIED: STAGE 1 (Parallel Base Analysis) ------------------
     # 只运行不互相依赖的基础分析师
@@ -179,9 +180,44 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
         if "Risk Manager" in final_reports:
             final_context_for_cto += f"\n\n## Report from Risk Manager:\n{final_reports.get('Risk Manager', {}).get('content','')}"
 
-        cto_result = await _analyze_agent(cto_cfg, user_message=f"{final_context_for_cto}\n\n# Your Task:\nMake the final decision and provide an actionable plan.")
+        # Compute and inject scheduling context for CTO
+        now_dt = datetime.now(timezone.utc)
+        # Find next default meeting time at :05 UTC where hour % 4 == 0
+        candidate = now_dt.replace(minute=5, second=0, microsecond=0)
+        if candidate <= now_dt:
+            candidate = candidate + timedelta(hours=1)
+        while candidate.hour % 4 != 0:
+            candidate = candidate + timedelta(hours=1)
+        now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        next_default_iso = candidate.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        scheduling_note = (
+            f"\n\n## Scheduling Context (for CTO)\n"
+            f"Current time (UTC): {now_iso}\n"
+            f"Default next meeting (UTC, every 4h at :05): {next_default_iso}\n\n"
+            f"If needed, call `rescheduleMeeting(countdown_minutes, reason)` to adjust ONLY the next meeting. "
+            f"Baseline cadence remains every 4h at :05 UTC. If you do not call it, the next meeting occurs at the default time above.\n"
+        )
+
+        cto_result = await _analyze_agent(
+            cto_cfg,
+            user_message=f"{final_context_for_cto}{scheduling_note}\n\n# Your Task:\nMake the final decision and provide an actionable plan.",
+        )
         final_reports["Chief Trading Officer"] = cto_result
         print(f"[Chief Trading Officer] responded:\n{cto_result.get('content','')}\n")
+
+    # ------------------ NEW: STAGE 5 (Sequential Trade Executor) ------------------
+    # 由执行官根据 CTO 的结构化计划实际调用交易工具（cancel/amend/add）
+    if trade_exec_cfg and "Chief Trading Officer" in final_reports:
+        exec_context = full_context
+        exec_context += f"\n\n## Report from Chief Trading Officer:\n{final_reports['Chief Trading Officer'].get('content','')}"
+
+        trade_exec_result = await _analyze_agent(
+            trade_exec_cfg,
+            user_message=f"{exec_context}\n\n# Your Task:\nExecute the CTO's structured plan exactly. Respect strict ordering: cancels -> amends -> adds.",
+        )
+        final_reports["Trade Executor"] = trade_exec_result
+        print(f"[Trade Executor] responded:\n{trade_exec_result.get('content','')}\n")
 
 
     print("--- Trading Strategy Meeting Ended ---")
