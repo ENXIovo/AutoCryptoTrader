@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     KRAKEN_API_SECRET: str = Field(..., env="KRAKEN_API_SECRET")
     KRAKEN_API_URL: str = Field(default="https://api.kraken.com", env="KRAKEN_API_URL")
     REDIS_URL: str = Field(..., env="REDIS_URL")
+    # DataCollector service for last_price snapshots
+    DATA_SERVICE_URL: str = Field(..., env="DATA_SERVICE_URL")
 
     # WebSocket 配置
     WS_ENABLED: bool = Field(default=True, env="WS_ENABLED")

@@ -145,7 +145,7 @@ class TradePlan(BaseModel):
 
     # 入场细节（对齐 AddOrder，精简到必要字段）
     entry_ordertype: OrderType = OrderType.market
-    entry_price2: Optional[float] = None
+    entry_price2: Optional[Union[float, str]] = None
     oflags: Optional[Union[str, List[str]]] = None
     timeinforce: Optional[TimeInForce] = None
     trigger: Optional[TriggerType] = None

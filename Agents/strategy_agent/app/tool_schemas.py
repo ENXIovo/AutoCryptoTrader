@@ -40,18 +40,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "getAccountInfo": {
         "type": "function",
         "name": "getAccountInfo",
-        "description": "Fetch detailed account information for a specified cryptocurrency, including available balance, global trading funds data (e.g., margin, valuation, unrealized P&L), related trade history, and all open orders.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Asset symbol, e.g., DOGE, ETH, BTC, TRUMP.",
-                },
-            },
-            "required": ["symbol"],
-            "additionalProperties": False,
-        },
+        "description": "Fetch full Kraken-filter snapshot: balances, trade balance, open orders (with userref), and trade history.",
+        "parameters": { "type": "object", "properties": {}, "additionalProperties": False },
     },
     "getKlineIndicators": {
         "type": "function",
@@ -109,7 +99,10 @@ TOOL_SCHEMAS["addOrder"] = {
         "properties": {
             "symbol": {"type": "string", "description": "Kraken altname, e.g., XBTUSD, ETHUSD."},
             "side": {"type": "string", "enum": ["buy", "sell"], "description": "Order side."},
-            "entry_price": {"type": "number", "description": "Entry price. For market orders, ignored."},
+            "entry_price": {"oneOf": [
+                {"type": "number"},
+                {"type": "string", "description": "Supports Kraken relative formats like '+5' or '+1.5%'."}
+            ], "description": "Entry price (absolute number or relative string). For market orders, ignored."},
             "position_size": {"type": "number", "description": "Base asset size, e.g., 0.001."},
             "stop_loss_price": {"type": "number", "description": "Stop-loss trigger price."},
             "take_profits": {"type": "array", "description": "TP ladder (1–2 items). Percentages sum to 100.",
@@ -118,9 +111,24 @@ TOOL_SCHEMAS["addOrder"] = {
                     "percentage_to_sell": {"type": "number", "minimum": 1, "maximum": 100, "description": "Sell percentage (1–100)."}
                 }, "required": ["price", "percentage_to_sell"], "additionalProperties": False}
             },
-            "entry_ordertype": {"type": "string", "enum": ["market", "limit"], "default": "market", "description": "Entry order type."},
-            "post_only": {"type": "boolean", "description": "Post-only for limit orders (maker-only). Maps to Kraken oflags 'post'."},
-            "userref": {"type": "integer", "description": "Optional user grouping tag. If omitted, executor will assign one."}
+            "entry_ordertype": {"type": "string", "enum": [
+                "market",
+                "limit",
+                "stop-loss",
+                "take-profit",
+                "stop-loss-limit",
+                "take-profit-limit",
+                "trailing-stop",
+                "trailing-stop-limit"
+            ], "default": "market", "description": "Entry order type (Kraken spot)."},
+            "entry_price2": {"oneOf": [
+                {"type": "number"},
+                {"type": "string", "description": "Supports Kraken relative formats like '+0' or '+0.5%'."}
+            ], "description": "Secondary price for *-limit or trailing-limit styles (Kraken price2)."},
+            "trigger": {"type": "string", "enum": ["index", "last"], "description": "Trigger source for conditional orders (Kraken trigger)."},
+            "timeinforce": {"type": "string", "enum": ["GTC", "IOC", "GTD"], "description": "Time-in-force policy."},
+            "oflags": {"type": "array", "items": {"type": "string"}, "description": "Kraken order flags array (e.g., ['post']). Will be serialized and forwarded."},
+            "post_only": {"type": "boolean", "description": "Convenience flag. When true, adds 'post' to oflags (maker-only)."}
         },
         "required": ["symbol", "side", "entry_price", "position_size", "stop_loss_price", "take_profits"],
         "additionalProperties": False
@@ -130,18 +138,17 @@ TOOL_SCHEMAS["addOrder"] = {
 TOOL_SCHEMAS["amendOrder"] = {
     "type": "function",
     "name": "amendOrder",
-    "description": "Amend an existing trade PRICES ONLY. Quantity/position_size cannot be amended. If order_id is provided, will attempt to amend the live exchange order (entry limit or stop-loss). If trade_id is provided, will amend ledger (stop-loss/TPs; entry price only when PENDING). To change size, first cancel (by order_id or trade_id) and then add a new order. Providing both identifiers is recommended to ensure one-shot consistency.",
+    "description": "Amend existing orders by userref (PRICES ONLY). Quantity/position_size cannot be amended. Use only userref to update: entry limit (if still unfilled), stop-loss trigger, and TP prices (ledger-only). To change size, first cancel (by userref) and then add a new order.",
     "parameters": {
         "type": "object",
         "properties": {
-            "order_id": {"type": "string", "description": "Kraken order txid. Use entry order_id to change entry limit; use SL order_id to change stop-loss trigger."},
-            "trade_id": {"type": "string", "description": "Internal trade identifier from ledger. Ensures ledger (SL/TPs) is updated even if exchange amend is not possible yet."},
+            "userref": {"type": "integer", "description": "Group identifier to amend orders and ledger (no exposure of order_id/trade_id)."},
             "new_entry_price": {"type": "number", "description": "New entry price (only for unfilled entry limit orders)."},
             "new_stop_loss_price": {"type": "number", "description": "New stop-loss trigger. If SL not created yet, updates ledger and will sync on creation."},
             "new_tp1_price": {"type": "number", "description": "New TP1 price (ledger only; strategy does not pre-place TP orders)."},
             "new_tp2_price": {"type": "number", "description": "New TP2 price (ledger only). If trade has only one TP, TP2 will NOT be auto-created."}
         },
-        "required": [],
+        "required": ["userref"],
         "additionalProperties": False
     }
 }
@@ -149,14 +156,13 @@ TOOL_SCHEMAS["amendOrder"] = {
 TOOL_SCHEMAS["cancelOrder"] = {
     "type": "function",
     "name": "cancelOrder",
-    "description": "Cancel an order or an entire trade. With order_id, cancels that single live order (entry or SL) and, if it is the last open order (or SL with remaining_size=0), closes and deletes the ledger. With trade_id, cancels associated open orders and deletes the trade record.",
+    "description": "Cancel a whole set of orders and delete the ledger by userref only. Do not expose order_id/trade_id.",
     "parameters": {
         "type": "object",
         "properties": {
-            "order_id": {"type": "string", "description": "Kraken order txid to cancel (entry or stop-loss)."},
-            "trade_id": {"type": "string", "description": "Ledger trade id. Will attempt to cancel associated open orders and delete the trade record."}
+            "userref": {"type": "integer", "description": "Group identifier to cancel the whole set on exchange and delete ledger (no exposure of order_id/trade_id)."}
         },
-        "required": [],
+        "required": ["userref"],
         "additionalProperties": False
     }
 }
