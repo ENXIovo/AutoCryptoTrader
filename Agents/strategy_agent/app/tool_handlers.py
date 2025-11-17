@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 此模块将工具名称映射到可以执行的具体函数。为了保持职责分离，
 StrategyAgent 本身不会直接处理其他服务的逻辑，而是通过调用
 外部 HTTP API 来获得数据。新增的 ``kraken_filter`` 和 ``gpt_latest``
-工具分别调用 KrakenService 的 ``/kraken-filter`` 端点和
+工具分别调用 KrakenTradingSpot 的无参 ``/kraken-filter`` 快照端点和
 DataCollector 的 ``/gpt-latest/{symbol}`` 端点。
 """
 
@@ -32,9 +32,12 @@ def calcRRR(**kwargs) -> dict:
         raise ValueError("calcRRR expects 'cases' as a list")
     return calc_rrr_batch(cases)
 
+def _getAccountInfo_noargs(**_ignored) -> dict:
+    return kraken_client.getAccountInfo()
+
 TOOL_HANDLERS = {
     "getTopNews": _getTopNews_fixed,
-    "getAccountInfo": kraken_client.getAccountInfo,
+    "getAccountInfo": _getAccountInfo_noargs,
     "getKlineIndicators": data_client.getKlineIndicators,
     "calcRRR": calcRRR,
     # New trading tools
@@ -57,27 +60,46 @@ def _push_stream(message: dict) -> str:
     return _r.xadd(_stream_key, {k: str(v) for k, v in envelope.items() if v is not None})
 
 def addOrder(**kwargs) -> dict:
+    # Merge oflags from explicit array and post_only convenience flag
+    _oflags = None
+    try:
+        if isinstance(kwargs.get("oflags"), list):
+            _oflags = [str(x) for x in kwargs.get("oflags") if x is not None]
+    except Exception:
+        _oflags = None
+    if kwargs.get("post_only"):
+        if _oflags is None:
+            _oflags = ["post"]
+        elif "post" not in _oflags:
+            _oflags.append("post")
+
+    # Enforce system-generated userref per order to avoid external exposure and guarantee grouping
+    import time as _time
+    _userref = int(_time.time())
+
     plan = {
         "symbol": kwargs.get("symbol"),
         "side": kwargs.get("side"),
         "entry_price": kwargs.get("entry_price"),
+        "entry_price2": kwargs.get("entry_price2"),
         "position_size": kwargs.get("position_size"),
         "stop_loss_price": kwargs.get("stop_loss_price"),
         "take_profits": kwargs.get("take_profits"),
         "entry_ordertype": kwargs.get("entry_ordertype", "market"),
-        # map post_only -> oflags ["post"] for KrakenTradingSpot executor (which serializes list)
-        "oflags": ["post"] if kwargs.get("post_only") else None,
-        "userref": kwargs.get("userref"),
+        "trigger": kwargs.get("trigger"),
+        "timeinforce": kwargs.get("timeinforce"),
+        # oflags list will be serialized by KrakenTradingSpot executor
+        "oflags": _oflags,
+        "userref": _userref,
     }
     msg = {"action": "add", "symbol": plan["symbol"], "plan": plan, "userref": plan.get("userref")}
     xid = _push_stream(msg)
-    return {"enqueued": True, "stream_id": xid}
+    return {"enqueued": True, "stream_id": xid, "userref": _userref}
 
 def amendOrder(**kwargs) -> dict:
     msg = {
         "action": "amend",
-        "order_id": kwargs.get("order_id"),
-        "trade_id": kwargs.get("trade_id"),
+        "userref": kwargs.get("userref"),
         "new_entry_price": kwargs.get("new_entry_price"),
         "new_stop_loss_price": kwargs.get("new_stop_loss_price"),
         "new_tp1_price": kwargs.get("new_tp1_price"),
@@ -88,7 +110,7 @@ def amendOrder(**kwargs) -> dict:
     return {"enqueued": True, "stream_id": xid}
 
 def cancelOrder(**kwargs) -> dict:
-    msg = {"action": "cancel", "order_id": kwargs.get("order_id"), "trade_id": kwargs.get("trade_id")}
+    msg = {"action": "cancel", "userref": kwargs.get("userref")}
     xid = _push_stream(msg)
     return {"enqueued": True, "stream_id": xid}
 

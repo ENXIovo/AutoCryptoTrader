@@ -6,8 +6,9 @@ class KrakenClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
-    def getAccountInfo(self, symbol: str) -> dict:
-        resp = requests.get(f"{self.base_url}/kraken-filter", params={"symbol": symbol}, timeout=5)
+    def getAccountInfo(self) -> dict:
+        # kraken-filter now returns a full snapshot without parameters
+        resp = requests.get(f"{self.base_url}/kraken-filter", timeout=10)
         resp.raise_for_status()
         return resp.json()
 
@@ -17,7 +18,7 @@ class DataClient:
         self.base_url = base_url.rstrip("/")
 
     def getKlineIndicators(self, symbol: str) -> dict:
-        resp = requests.get(f"{self.base_url}/gpt-latest/{symbol}", timeout=5)
+        resp = requests.get(f"{self.base_url}/gpt-latest/{symbol}", timeout=10)
         resp.raise_for_status()
         return resp.json()
 
@@ -31,7 +32,7 @@ class NewsClient:
         params = {"limit": limit}
         if period is not None:
             params["period"] = period  # "day" | "week" | "month"
-        resp = requests.get(f"{self.base_url}/top-news", params=params, timeout=5)
+        resp = requests.get(f"{self.base_url}/top-news", params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
 

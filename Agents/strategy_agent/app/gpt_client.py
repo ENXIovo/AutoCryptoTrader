@@ -10,7 +10,7 @@ class GPTClient:
     """
     仅负责跟 GPT-Proxy HTTP 通信
     """
-    def __init__(self, base_url: str, max_retries: int = 5):
+    def __init__(self, base_url: str, max_retries: int = 3):
         self.base_url = base_url
         self.max_retries = max_retries
 
@@ -23,7 +23,7 @@ class GPTClient:
         while attempts < self.max_retries:
             attempts += 1
             try:
-                resp = requests.post(self.base_url, json=payload, timeout=600)
+                resp = requests.post(self.base_url, json=payload)
 
                 # 429: 退避到 TPM 刷新（或遵循 Retry-After）
                 if resp.status_code == 429:

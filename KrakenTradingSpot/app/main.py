@@ -10,11 +10,10 @@ from enum import Enum
 import httpx
 
 from app.config import settings
-from app.kraken_client import KrakenClient
 from app.ledger import ledger_instance as ledger
 from app.models import TradePlan, TakeProfitTarget, StreamAction
 
-app = FastAPI(title="Kraken Trading Service")
+app = FastAPI(title="Trading Service (Virtual)")
 logger = logging.getLogger(__name__)
 
 _redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -58,9 +57,7 @@ def orders_add(plan: TradePlan, userref: int | None = None):
 
 @app.post("/orders/amend", status_code=202)
 def orders_amend(
-    order_id: str | None = None,
-    trade_id: str | None = None,
-    userref: int | None = None,
+    userref: int,
     new_entry_price: float | None = None,
     new_stop_loss_price: float | None = None,
     new_tp1_price: float | None = None,
@@ -71,8 +68,6 @@ def orders_amend(
         raise HTTPException(status_code=400, detail="nothing to amend")
     msg = {
         "action": StreamAction.amend,
-        "order_id": order_id,
-        "trade_id": trade_id,
         "userref": userref,
         "symbol": None,
         "new_entry_price": new_entry_price,
@@ -86,8 +81,8 @@ def orders_amend(
 
 
 @app.post("/orders/cancel", status_code=202)
-def orders_cancel(order_id: str | None = None, trade_id: str | None = None, userref: int | None = None):
-    msg = {"action": StreamAction.cancel, "order_id": order_id, "trade_id": trade_id, "userref": userref, "symbol": None}
+def orders_cancel(userref: int):
+    msg = {"action": StreamAction.cancel, "userref": userref, "symbol": None}
     request_id = _push_to_stream(msg)
     return {"message": "enqueued", "request_id": request_id}
 
@@ -153,7 +148,7 @@ async def kraken_filter_api():
                     by_sl[str(t.stop_loss_txid)] = t
                 by_symbol.setdefault(t.symbol, []).append(t)
 
-            used_trade_ids: set[str] = set()
+            used_userrefs: set[str] = set()
             for pair, lst in list((open_orders or {}).items()):
                 new_list = []
                 for o in lst or []:
@@ -166,13 +161,13 @@ async def kraken_filter_api():
                         t = by_sl[oid]
                     elif uref is not None and str(uref) in by_userref:
                         t = by_userref[str(uref)]
-                    # 回退匹配：按 symbol + 价格接近且状态为 PENDING，且未被占用
+                    # 回退匹配：按 symbol + 价格接近且状态为 PENDING，且未被占用（按 userref 去重）
                     if not t:
                         try:
                             order_price = float(o.get("price") or 0.0)
                         except Exception:
                             order_price = None
-                        cands = [ct for ct in by_symbol.get(pair, []) if getattr(ct, "status", None) == "PENDING" and ct.trade_id not in used_trade_ids]
+                        cands = [ct for ct in by_symbol.get(pair, []) if getattr(ct, "status", None) == "PENDING" and str(getattr(ct, "userref", None)) not in used_userrefs]
                         if order_price is not None and cands:
                             def _price_close(x: float, y: float, tol: float = 1e-6) -> bool:
                                 return abs(float(x) - float(y)) <= tol * max(1.0, abs(float(y)))
@@ -188,10 +183,9 @@ async def kraken_filter_api():
                     order_role = "other"
                     tp_index = None
                     if t:
-                        o["trade_id"] = t.trade_id
+                        # 不再暴露内部 trade_id 与 stop_loss_txid
                         o["take_profits"] = [tp.model_dump() for tp in (t.take_profits or [])]
                         o["remaining_size"] = t.remaining_size
-                        o["stop_loss_txid"] = t.stop_loss_txid
                         o["sl_price"] = getattr(t, "stop_loss_price", None)
                         o["trade_status"] = t.status
                         # 摘要字段（便于直观展示 TP1/TP2）
@@ -206,8 +200,8 @@ async def kraken_filter_api():
                                 o["tp2_pct"] = tp2.percentage_to_sell
                         except Exception:
                             pass
-                        used_trade_ids.add(t.trade_id)
-                        group_id = t.trade_id
+                        used_userrefs.add(str(getattr(t, "userref", "")))
+                        group_id = str(getattr(t, "userref", "")) if getattr(t, "userref", None) is not None else None
                         # 角色：entry / stop_loss / tp1 / tp2 / other
                         try:
                             if getattr(t, "entry_txid", None) and oid == t.entry_txid:

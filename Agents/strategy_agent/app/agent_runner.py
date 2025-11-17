@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import redis
+import requests
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
@@ -16,6 +17,7 @@ from .gpt_client import GPTClient
 from .scheduler import Scheduler
 from .tool_schemas import TOOL_SCHEMAS
 from .tool_handlers import TOOL_HANDLERS
+from .tool_router import DataClient
 from .models import MessageRequest
 
 EXECUTOR = ThreadPoolExecutor(max_workers=8)
@@ -66,6 +68,84 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
         },
         **xadd_kwargs,
     )
+# --- Helper: attach a concise userref snapshot for CTO/Executor ---
+def _build_userref_snapshot() -> str:
+    try:
+        resp = requests.get(f"{settings.trading_url}/kraken-filter", timeout=5)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        open_orders = data.get("open_orders") or {}
+        # Collect distinct userrefs per symbol for quick referencing
+        lines: list[str] = []
+        for pair, orders in (open_orders or {}).items():
+            userrefs = []
+            try:
+                userrefs = sorted({str(o.get("userref")) for o in (orders or []) if o.get("userref") is not None})
+            except Exception:
+                userrefs = []
+            if not userrefs:
+                continue
+            lines.append(f"- {pair}: userref(s): {', '.join(userrefs)}")
+        if not lines:
+            return "No open orders snapshot available (no userrefs found)."
+        header = (
+            "Userref Snapshot (use these userref values for cancels/amends; do not use order_id/trade_id):\n"
+        )
+        return header + "\n".join(lines)
+    except Exception as _:
+        return "Userref Snapshot unavailable (kraken-filter fetch failed)."
+
+
+# --- Helper: attach last_price snapshot from DataCollector for CTO ---
+def _build_last_price_snapshot() -> str:
+    try:
+        dc = DataClient(settings.data_service_url)
+        symbols = get_trade_universe()
+        lines: list[str] = []
+        
+        def _candidate_data_symbols(sym: str) -> list[str]:
+            s = str(sym).upper().strip()
+            bases: list[str]
+            if s in ("BTC", "XBT"):
+                bases = ["XBT", "BTC"]
+            else:
+                bases = [s]
+            candidates: list[str] = []
+            for b in bases:
+                candidates.append(f"{b}USD")
+            # 去重，保持顺序
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for c in candidates:
+                if c not in seen:
+                    seen.add(c)
+                    uniq.append(c)
+            return uniq
+        for sym in symbols:
+            try:
+                last = None
+                for query_sym in _candidate_data_symbols(sym):
+                    try:
+                        data = dc.getKlineIndicators(query_sym)
+                        last = (
+                            ((data or {}).get("common_info") or {})
+                            .get("ticker", {})
+                            .get("last_price")
+                        )
+                        if last is not None:
+                            break
+                    except Exception:
+                        continue
+                if last is not None:
+                    lines.append(f"- {sym}: last_price={last}")
+            except Exception:
+                continue
+        if not lines:
+            return "No last_price snapshot available."
+        return "Live Ticker (last_price only):\n" + "\n".join(lines)
+    except Exception:
+        return "Live Ticker snapshot unavailable."
+
 
 
 # REMOVED: 本地的 _get_trade_universe 函数已被删除，因为它现在从 config.py 导入
@@ -77,17 +157,47 @@ async def _analyze_agent(
     system_message_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     scheduler = _build_scheduler(agent_cfg["tools"])
-    msg_req = MessageRequest(
-        message=user_message,
-        system_message=system_message_override or agent_cfg["prompt"],
-        deployment_name=agent_cfg["deployment_name"],
-    )
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(EXECUTOR, scheduler.analyze, msg_req)
+
+    primary_deployment = agent_cfg.get("deployment_name")
+    fallback_order = [
+        "gpt-5-mini",
+        "gpt-5-nano",
+    ]
+
+    async def _call(deployment_name: str) -> Dict[str, Any]:
+        req = MessageRequest(
+            message=user_message,
+            system_message=system_message_override or agent_cfg["prompt"],
+            deployment_name=deployment_name,
+        )
+        return await loop.run_in_executor(EXECUTOR, scheduler.analyze, req)
+
+    last_err: Exception | None = None
+    # Try primary once, with 30s timeout set in GPTClient
+    try:
+        return await _call(primary_deployment)
+    except Exception as e:
+        last_err = e
+
+    # Sequential fallbacks: mini -> nano, each only once
+    for fb in fallback_order:
+        if fb == primary_deployment:
+            continue
+        try:
+            return await _call(fb)
+        except Exception as e2:
+            last_err = e2
+
+    # Final fallback: return an error-shaped response to avoid crashing the meeting
+    return {
+        "content": f"[ERROR] Agent '{agent_cfg.get('name')}' failed after retries and fallback. Last error: {last_err}",
+        "error": str(last_err) if last_err else "unknown",
+    }
 
 async def run_agents_in_sequence_async() -> Dict[str, Any]:
     """
-    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO -> Trade Executor。
+    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO（CTO 直接执行工具）。
     """
     print("--- Starting Trading Strategy Meeting (New Workflow) ---")
 
@@ -105,7 +215,6 @@ async def run_agents_in_sequence_async() -> Dict[str, Any]:
     ta_cfg = cfg_by_name.get("Lead Technical Analyst")
     risk_cfg = cfg_by_name.get("Risk Manager")
     cto_cfg = cfg_by_name.get("Chief Trading Officer")
-    trade_exec_cfg = cfg_by_name.get("Trade Executor")
 
     # ------------------ MODIFIED: STAGE 1 (Parallel Base Analysis) ------------------
     # 只运行不互相依赖的基础分析师
@@ -199,6 +308,11 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
             f"Baseline cadence remains every 4h at :05 UTC. If you do not call it, the next meeting occurs at the default time above.\n"
         )
 
+        # Attach userref snapshot for decision context
+        final_context_for_cto += f"\n\n## Userref Snapshot\n{_build_userref_snapshot()}\n"
+        # Attach last price snapshot for limit-order validation guidance
+        final_context_for_cto += f"\n\n## Live Ticker\n{_build_last_price_snapshot()}\n"
+
         cto_result = await _analyze_agent(
             cto_cfg,
             user_message=f"{final_context_for_cto}{scheduling_note}\n\n# Your Task:\nMake the final decision and provide an actionable plan.",
@@ -206,18 +320,7 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
         final_reports["Chief Trading Officer"] = cto_result
         print(f"[Chief Trading Officer] responded:\n{cto_result.get('content','')}\n")
 
-    # ------------------ NEW: STAGE 5 (Sequential Trade Executor) ------------------
-    # 由执行官根据 CTO 的结构化计划实际调用交易工具（cancel/amend/add）
-    if trade_exec_cfg and "Chief Trading Officer" in final_reports:
-        exec_context = full_context
-        exec_context += f"\n\n## Report from Chief Trading Officer:\n{final_reports['Chief Trading Officer'].get('content','')}"
-
-        trade_exec_result = await _analyze_agent(
-            trade_exec_cfg,
-            user_message=f"{exec_context}\n\n# Your Task:\nExecute the CTO's structured plan exactly. Respect strict ordering: cancels -> amends -> adds.",
-        )
-        final_reports["Trade Executor"] = trade_exec_result
-        print(f"[Trade Executor] responded:\n{trade_exec_result.get('content','')}\n")
+    # Stage 5 removed: CTO executes directly with tools
 
 
     print("--- Trading Strategy Meeting Ended ---")

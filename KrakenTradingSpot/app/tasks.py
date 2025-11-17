@@ -3,7 +3,7 @@ import time
 from typing import Dict, Any, Optional
 import logging
 
-from app.kraken_client import KrakenClient
+from app.virtual_exchange import virtual_exch
 from app.config import settings
 from app.ledger import ledger_instance as ledger
 from app.models import (
@@ -44,8 +44,8 @@ def _normalize_take_profits(original: list[TakeProfitTarget]) -> list[TakeProfit
         tps[1].percentage_to_sell *= scale
     return tps
 
-# Kraken 客户端单例
-kraken = KrakenClient()
+# 虚拟交易所：提供 get_ticker 兼容接口
+kraken = virtual_exch
 logger = logging.getLogger(__name__)
 
 
@@ -64,9 +64,14 @@ async def run_trade(plan_dict: Dict[str, Any]) -> None:
         # 兜底：使用原先的两档比例规范化
         normalized_tps = _normalize_take_profits(plan.take_profits)
     trade_id = str(plan_dict.get("trade_id"))
+    # 确保统一的 userref（若上游未提供，则在此确定一个并贯穿所有订单）
+    plan_userref = plan.userref if plan.userref is not None else int(time.time())
     # 用规范化后的 TP 写入台账
     ledger_entry = TradeLedgerEntry(
-        **plan.model_dump() | {"take_profits": [tp.model_dump() for tp in normalized_tps]},
+        **(plan.model_dump() | {
+            "take_profits": [tp.model_dump() for tp in normalized_tps],
+            "userref": plan_userref,
+        }),
         trade_id=trade_id,
         remaining_size=plan.position_size
     )
@@ -86,8 +91,9 @@ async def run_trade(plan_dict: Dict[str, Any]) -> None:
             trigger=plan.trigger,
             close_ordertype=OrderType.stop_loss,
             close_price=str(plan.stop_loss_price),
+            userref=plan_userref,
         )
-        logger.info(f"[TASK] Placing main market order symbol={plan.symbol} vol={plan.position_size}")
+        logger.info(f"[TASK] Placing main {plan.entry_ordertype.value} order symbol={plan.symbol} vol={plan.position_size}")
         entry_txid = await add_order_service(main_order_payload)
         logger.info(f"[TASK] Main order placed symbol={plan.symbol} entry_txid={entry_txid}")
 
@@ -95,7 +101,7 @@ async def run_trade(plan_dict: Dict[str, Any]) -> None:
         def _set_entry_txid(trade: TradeLedgerEntry):
             trade.entry_txid = entry_txid
             return trade
-        ledger.update_trade_atomically(plan.symbol, _set_entry_txid)
+        ledger.update_trade_by_id_atomically(trade_id, _set_entry_txid)
 
         # 市价单：通常即时成交，可等待 closed 确认并转 ACTIVE；限价单：不等待，由 WS 事件推动
         if plan.entry_ordertype == OrderType.market:
@@ -216,6 +222,7 @@ async def execute_tp1_logic(trade: TradeLedgerEntry):
         type=OrderSide.sell,
         ordertype=OrderType.market,
         volume=str(size_to_sell),
+        userref=getattr(trade, "userref", None),
     )
     await add_order_service(sell_req)
 
@@ -247,6 +254,7 @@ async def execute_final_tp_logic(trade: TradeLedgerEntry):
         type=OrderSide.sell,
         ordertype=OrderType.market,
         volume=str(trade.remaining_size),
+        userref=getattr(trade, "userref", None),
     )
     await add_order_service(sell_req)
 
@@ -260,7 +268,7 @@ async def amend_order_task(amend_dict: Dict[str, Any]) -> None:
 
 
 async def wait_for_order_closed(txid: str, timeout_seconds: int | None = None) -> bool:
-    """改为基于 WS 事件流的等待：由 ws_listener 将每个订单状态广播到 kraken:orders:{txid} Stream。
+    """基于 Redis 事件流的等待：由 VirtualExchange 将每个订单状态广播到 kraken:orders:{txid} Stream。
     这里消费该 Stream，直到看到 closed/canceled 或超时。"""
     from app.utils.redis_utils import new_redis, xread_block
     r = new_redis()

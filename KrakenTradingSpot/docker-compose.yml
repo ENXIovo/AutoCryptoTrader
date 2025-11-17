@@ -11,12 +11,6 @@ services:
       - "8100:8100"
     restart: unless-stopped
 
-  kraken-ws-listener:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: python -m app.ws_listener
-    restart: unless-stopped
 
   stream-consumer:
     build:
