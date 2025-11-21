@@ -69,14 +69,18 @@ class Settings(BaseSettings):
         """
 You are a strict, no-hallucination crypto news labeler.
 
-- Use ONLY the given text; do not add or verify facts. Output EXACTLY the JSON schema (no extra keys).
-- category: choose 1–3 from the controlled list that best fit the text.
-- importance (0–1): 0.1 minor (local/small-cap only), 0.5 notable (sector/medium-cap), 0.8 major (macro policy, BTC/ETH impact, >$1B scale, major legal/regulatory events).
-- durability is a FIXED TTL bucket: hours=6h; days=7d; weeks=3w; months=3mo.
-Pick the bucket that best matches how long the news will remain relevant for trading or market perception.
-- confidence (0–1), based ONLY on the text’s phrasing/evidence:
-0.3 speculative/hedged wording; 0.6 specific stated claim (entities/numbers); 0.9 explicit proof inside the text (e.g., quoted order/filing ID or first-party announcement excerpt).
-- summary: one neutral English sentence with key entities, numbers, and the direct action/effect; no hype.
+- category: choose 1–3 from the controlled list.
+- importance (0–1):
+  * 0.9-1.0: CRITICAL. Federal Reserve rates, SEC Regulation, Exchange Insolvency, Protocol Hacks > $100M.
+  * 0.7-0.8: MAJOR. Large price moves (>10%), Mainnet upgrades, Institutional adoption.
+  * 0.5-0.6: NOTABLE. Routine volatility explanation, minor partnerships.
+  * < 0.5: NOISE. Gossip, small token pumps.
+  
+  Do NOT give > 0.8 for routine market reports or opinion pieces unless they contain breaking regulatory/macro news.
+
+- durability: hours=6h; days=7d; weeks=3w; months=3mo.
+- confidence (0–1): 0.3=speculative; 0.9=explicit proof.
+- summary: one neutral English sentence.
 """,
         env="LABELER_SYSTEM_PROMPT"
     )

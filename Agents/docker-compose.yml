@@ -1,25 +1,25 @@
 services:
-  auto-crypto-trade:
-    build:
-      context: ./strategy_agent
-      dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: auto-crypto-base
-    container_name: auto-crypto-trade
-    ports:
-      - "8080:8080"
+  # auto-crypto-trade:
+  #   build:
+  #     context: ./strategy_agent
+  #     dockerfile: Dockerfile
+  #     args:
+  #       BASE_IMAGE: auto-crypto-base
+  #   container_name: auto-crypto-trade
+  #   ports:
+  #     - "8080:8080"
 
-  celery-beat-auto-trade:
-    build:
-      context: ./strategy_agent
-      dockerfile: Dockerfile
-    command: celery -A app.tasks beat --loglevel=info
+  # celery-beat-auto-trade:
+  #   build:
+  #     context: ./strategy_agent
+  #     dockerfile: Dockerfile
+  #   command: celery -A app.tasks beat --loglevel=info
   
-  auto-trade-worker:
-    build:
-      context: ./strategy_agent
-      dockerfile: Dockerfile
-    command: celery -A app.tasks worker --loglevel=info --queues=auto_trade_queue
+  # auto-trade-worker:
+  #   build:
+  #     context: ./strategy_agent
+  #     dockerfile: Dockerfile
+  #   command: celery -A app.tasks worker --loglevel=info --queues=auto_trade_queue
 
   newslabeler-web:
     build:
@@ -34,4 +34,10 @@ services:
       context: ./news_labeler
       dockerfile: Dockerfile
     command: python -m app.label_worker
+    restart: unless-stopped
+
+  alert-service:
+    build:
+      context: ./alert_service
+      dockerfile: Dockerfile
     restart: unless-stopped
