@@ -184,6 +184,13 @@ def fetch_and_store_data_for_intervals(symbol: str, intervals: List[int]):
             # (c) 拼出单个interval数据 (给 GPT)
             interval_data = {
                 "timeframe": interval,
+                # Add OHLCV for matching engine
+                "open": float(kline_list[-1][1]),
+                "high": float(kline_list[-1][2]),
+                "low": float(kline_list[-1][3]),
+                "close": float(kline_list[-1][4]),
+                "volume": float(kline_list[-1][6]),
+                # Indicators
                 "ema_9": ema_9,
                 "sma_14": sma_14,
                 "rsi_14": rsi_14,

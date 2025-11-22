@@ -1,5 +1,6 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from typing import List
 
 class Settings(BaseSettings):
     KRAKEN_API_KEY: str = Field(..., env="KRAKEN_API_KEY")
@@ -63,6 +64,9 @@ class Settings(BaseSettings):
     REDIS_BACKOFF_FACTOR: float = Field(default=1.5, env="REDIS_BACKOFF_FACTOR")
     REDIS_RETRY_MAX_SECONDS: float = Field(default=10.0, env="REDIS_RETRY_MAX_SECONDS")
     
+    # Polling
+    TARGET_SYMBOLS: List[str] = Field(default=["XBTUSDT"], env="TARGET_SYMBOLS")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

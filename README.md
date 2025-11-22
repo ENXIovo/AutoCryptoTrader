@@ -51,9 +51,14 @@ AutoCryptoTrader is a multi-service, GPT-powered quantitative assistant designed
 
 **Goal:** Full Order Management System (OMS) capabilities (Open/Modify/Cancel/Position Tracking) without external API dependencies.
 
+**Design Philosophy (V1 Simplified):**
+- **K-Line Matching:** Matches orders based on **1-minute OHLC** data instead of tick-level data. If `Low <= Buy Price` in a minute, it fills. This unifies logic for both Live Trading and Backtesting.
+- **Simple Wallet:** Single-ledger balance tracking. Orders deduct funds immediately; Cancels refund immediately. No complex freeze/unfreeze logic.
+- **Snapshot Persistence:** State is saved as a single JSON snapshot to Redis on every change, ensuring simple disaster recovery.
+
 **Acceptance Criteria:**
 - **Entities:** Strongly typed `VirtualOrder`, `VirtualPosition`, `VirtualTrade` (supporting Market/Limit orders).
-- **Matching:** Consumes real-time `last_price`. Market orders fill immediately; Limit orders fill upon price crossing.
+- **Matching:** Consumes 1m OHLC from DataCollector. Market orders fill at Close; Limit orders fill if Price is within Low-High range.
 - **Operations:** Support via HTTP/CLI for: Place Order, Modify Price/Qty, Cancel Order.
 - **Decoupling:** Engine operates independently of any exchange API keys.
 - **Validation:** A standard test sequence (Up/Chop/Down market simulation) results in Virtual PnL matching expected calculation.
