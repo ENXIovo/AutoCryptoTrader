@@ -10,11 +10,3 @@ services:
     ports:
       - "8100:8100"
     restart: unless-stopped
-
-
-  stream-consumer:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: python -m app.stream_consumer
-    restart: unless-stopped
