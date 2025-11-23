@@ -70,30 +70,35 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
     )
 # --- Helper: attach a concise userref snapshot for CTO/Executor ---
 def _build_userref_snapshot() -> str:
+    """
+    Fetch Clearinghouse State (Account Info) and format for Agent context.
+    Shows Balance and Open Orders.
+    """
     try:
-        resp = requests.get(f"{settings.trading_url}/kraken-filter", timeout=5)
+        # We use the requests logic similar to tool_handler but inline here for context building
+        resp = requests.post(f"{settings.trading_url.rstrip('/')}/info", json={"type": "clearinghouseState"}, timeout=5)
         resp.raise_for_status()
-        data = resp.json() or {}
-        open_orders = data.get("open_orders") or {}
-        # Collect distinct userrefs per symbol for quick referencing
-        lines: list[str] = []
-        for pair, orders in (open_orders or {}).items():
-            userrefs = []
-            try:
-                userrefs = sorted({str(o.get("userref")) for o in (orders or []) if o.get("userref") is not None})
-            except Exception:
-                userrefs = []
-            if not userrefs:
-                continue
-            lines.append(f"- {pair}: userref(s): {', '.join(userrefs)}")
-        if not lines:
-            return "No open orders snapshot available (no userrefs found)."
-        header = (
-            "Userref Snapshot (use these userref values for cancels/amends; do not use order_id/trade_id):\n"
-        )
-        return header + "\n".join(lines)
-    except Exception as _:
-        return "Userref Snapshot unavailable (kraken-filter fetch failed)."
+        state = resp.json()
+        
+        # Format Balance
+        margin = state.get("marginSummary", {})
+        balance_str = f"Account Equity: ${margin.get('accountValue', '0.0')}"
+        
+        # Format Open Orders
+        open_orders = state.get("openOrders", [])
+        if not open_orders:
+            orders_str = "(No Open Orders)"
+        else:
+            lines = []
+            for o in open_orders:
+                # o: {oid, coin, side, limitPx, sz}
+                side = "BUY" if o.get("side") == "B" else "SELL"
+                lines.append(f"- {o.get('coin')} {side} {o.get('sz')} @ {o.get('limitPx')} (oid: {o.get('oid')})")
+            orders_str = "Open Orders:\n" + "\n".join(lines)
+        
+        return f"{balance_str}\n\n{orders_str}"
+    except Exception as e:
+        return f"Account Snapshot Unavailable: {e}"
 
 
 # --- Helper: attach last_price snapshot from DataCollector for CTO ---

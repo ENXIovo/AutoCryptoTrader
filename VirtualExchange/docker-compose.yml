@@ -1,12 +1,12 @@
 services:
 
-  kraken-api:
+  virtual-exchange:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        BASE_IMAGE: kraken-base
-    container_name: kraken-api
+        BASE_IMAGE: exchange-base
+    container_name: virtual-exchange
     ports:
       - "8100:8100"
     restart: unless-stopped

@@ -125,7 +125,7 @@ def _process_one(r, client: GPTClient, group: str, msg_id: str, fields: dict):
             xack(r, group, msg_id) # 即使跳过也要ACK，否则会一直堆积
             return
 
-        _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
+            _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
     except Exception as e:
         logger.exception("[process] failed id=%s key=%s: %s", msg_id, key, e)
         # 不 ACK，留给重试

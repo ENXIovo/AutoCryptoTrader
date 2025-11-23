@@ -1,7 +1,7 @@
 # dockerfile
 
-# 应用镜像：依赖已预构建的基础镜像标签 kraken-base
-FROM kraken-base AS app
+# 应用镜像：依赖已预构建的基础镜像标签 exchange-base
+FROM exchange-base AS app
 
 # 复制应用程序代码到容器中
 COPY . /app
