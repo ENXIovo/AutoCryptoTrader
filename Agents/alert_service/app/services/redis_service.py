@@ -24,12 +24,12 @@ class RedisService:
 
     def is_alert_sent(self, key: str) -> bool:
         """Check if an alert for this key has already been sent."""
-        return self.client.sismember("sent:alerts", key)
+        return self.client.sismember(settings.REDIS_SENT_KEY, key)
 
     def mark_alert_as_sent(self, key: str, ttl: int = 604800):
         """Mark an alert as sent and set expiry (default 7 days)."""
-        self.client.sadd("sent:alerts", key)
-        self.client.expire("sent:alerts", ttl)
+        self.client.sadd(settings.REDIS_SENT_KEY, key)
+        self.client.expire(settings.REDIS_SENT_KEY, ttl)
 
     def get_news_details(self, key: str) -> Optional[Dict[str, str]]:
         """Fetch news details from Hash."""
@@ -40,6 +40,6 @@ class RedisService:
     def add_to_history(self, key: str, score: float, summary: str):
         """Add alert record to history list for observability."""
         history_entry = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {key} | {score:.2f} | {summary}"
-        self.client.lpush("list:alerts:history", history_entry)
-        self.client.ltrim("list:alerts:history", 0, 99)  # Keep last 100 alerts
+        self.client.lpush(settings.REDIS_HISTORY_KEY, history_entry)
+        self.client.ltrim(settings.REDIS_HISTORY_KEY, 0, 99)  # Keep last 100 alerts
 

@@ -1,5 +1,6 @@
-from __future__ import annotations
-
+"""
+Time utilities - 时间工具函数
+"""
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,16 +31,3 @@ def parse_ts(ts: str) -> Optional[datetime]:
     except Exception:
         return None
 
-
-def period_to_window_hours(period: Optional[str]) -> Optional[int]:
-    """day|week|month -> 小时数；None 则不限制窗口。"""
-    if not period:
-        return None
-    p = period.lower()
-    if p == "day":
-        return 24
-    if p == "week":
-        return 7 * 24
-    if p == "month":
-        return 30 * 24
-    return None

@@ -41,11 +41,22 @@ def safe_call(func, *args, **kwargs):
 
 
 def compute_weight(importance: float, durability: str, created_ts: str) -> float:
-    # MVP：假设 ts 为 ISO8601 且含时区；异常让它抛
-    created_at = datetime.fromisoformat(created_ts)
+    """
+    计算权重：支持Unix时间戳（字符串）和ISO8601格式
+    """
+    try:
+        # 尝试解析为Unix时间戳
+        timestamp = float(created_ts)
+        created_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (ValueError, TypeError):
+        # 向后兼容：解析ISO8601
+        created_at = datetime.fromisoformat(created_ts)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+    
     now = datetime.now(timezone.utc)
     delta_hours = (now - created_at).total_seconds() / 3600.0
-    half_life = settings.half_life_hours[durability]  # 假设合法键
+    half_life = settings.half_life_hours[durability]
     return float(importance) * (0.5 ** (delta_hours / half_life))
 
 

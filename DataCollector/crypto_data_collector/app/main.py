@@ -66,7 +66,7 @@ def get_task_result(task_id: str):
 
 @app.get("/gpt-latest/{symbol}")
 def get_gpt_data(symbol: str):
-    redis_key = f"gpt_data:{symbol}"
+    redis_key = f"data:{symbol}"
     cached_data = redis_client.get(redis_key)
     if cached_data:
         return json.loads(cached_data)

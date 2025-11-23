@@ -21,14 +21,15 @@ class DataLoader:
     - 返回标准化的OHLC数据
     """
     
-    def __init__(self, data_store_path: str = "/app/data/candles"):
+    def __init__(self, data_store_path: str = "/app/data"):
         """
         初始化数据加载器
         
         Args:
-            data_store_path: M2 DataStore路径
+            data_store_path: M2 DataStore根路径（包含candles和news目录）
         """
-        self.data_store_path = Path(data_store_path)
+        self.base_path = Path(data_store_path)
+        self.candles_path = self.base_path / "candles"
         logger.info(f"[DataLoader] Initialized with path: {data_store_path}")
     
     def load_candles(
@@ -57,8 +58,8 @@ class DataLoader:
         end_date = end_time.date()
         
         while current_date <= end_date:
-            # 构建文件路径
-            file_path = self.data_store_path / f"{symbol}_{timeframe}" / f"{current_date.strftime('%Y-%m-%d')}.parquet"
+            # 构建文件路径（新格式：data/candles/{SYMBOL}_{TIMEFRAME}/{YYYY-MM-DD}.parquet）
+            file_path = self.candles_path / f"{symbol}_{timeframe}" / f"{current_date.strftime('%Y-%m-%d')}.parquet"
             
             if file_path.exists():
                 try:

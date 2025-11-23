@@ -139,7 +139,7 @@ async def cancel_order(req: CancelOrderRequest) -> Dict[str, Any]:
         
         # 从引擎移除
         engine.remove_order(order.txid)
-        
+
         return {
             "status": "ok",
             "response": {"data": "Order canceled"}
@@ -205,7 +205,7 @@ async def get_info(req: Dict[str, Any]) -> Dict[str, Any]:
                 {"name": "XBT", "szDecimals": 5, "maxLeverage": 50},
             ]
         }
-    
+        
     if req_type == "clearinghouseState":
         # 返回账户状态
         runner = get_runner()
@@ -223,15 +223,15 @@ async def get_info(req: Dict[str, Any]) -> Dict[str, Any]:
         # 构建openOrders
         open_orders = []
         for order in engine.get_open_orders():
-            open_orders.append({
+                open_orders.append({
                 "oid": hash(order.txid) % 1000000000,
                 "coin": order.pair.replace("USDT", ""),
                 "side": "B" if order.type == "buy" else "A",
                 "limitPx": str(order.price or "0"),
                 "sz": str(order.volume),
                 "timestamp": int(order.created_at * 1000)
-            })
-        
+                })
+
         return {
             "marginSummary": {
                 "accountValue": str(account_value),
@@ -243,7 +243,7 @@ async def get_info(req: Dict[str, Any]) -> Dict[str, Any]:
             "assetPositions": [],
             "openOrders": open_orders
         }
-    
+        
     return {"status": "err", "response": "Unknown info type"}
 
 

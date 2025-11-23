@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     
     news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
     
-    analysis_results_stream_key: str = Field("stream:analysis_results:raw", env="ANALYSIS_RESULTS_STREAM_KEY")
+    analysis_results_stream_key: str = Field("results", env="ANALYSIS_RESULTS_STREAM_KEY")
     analysis_results_stream_maxlen: int = Field(1000, env="ANALYSIS_RESULTS_STREAM_MAXLEN")
     
     trade_universe_json: str | None = Field('["BTC"]', env="TRADE_UNIVERSE_JSON")

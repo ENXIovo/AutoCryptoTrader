@@ -34,6 +34,8 @@ services:
       dockerfile: dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      - ./data/parquet:/app/data
     depends_on:
       mysql:
         condition: service_healthy
@@ -44,7 +46,9 @@ services:
     build:
       context: ./crypto_data_collector
       dockerfile: dockerfile
-    command: celery -A app.tasks worker --loglevel=info
+    command: celery -A app.tasks worker --loglevel=info -Q data_collector
+    volumes:
+      - ./data/parquet:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -56,6 +60,8 @@ services:
       context: ./crypto_data_collector
       dockerfile: dockerfile
     command: celery -A app.tasks beat --loglevel=info
+    volumes:
+      - ./data/parquet:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -66,6 +72,8 @@ services:
       dockerfile: dockerfile
     ports:
       - "8300:8000"
+    volumes:
+      - ./data/parquet:/app/data
     restart: unless-stopped
     depends_on:
       redis:
@@ -78,6 +86,32 @@ services:
       dockerfile: dockerfile
     command: python -m app.telegram_listener
     container_name: newscollector-listener
+    volumes:
+      - ./data/parquet:/app/data
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  newscollector-celery-worker:
+    build:
+      context: ./crypto_news_collector
+      dockerfile: dockerfile
+    command: celery -A app.tasks worker --loglevel=info
+    volumes:
+      - ./data/parquet:/app/data
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  newscollector-celery-beat:
+    build:
+      context: ./crypto_news_collector
+      dockerfile: dockerfile
+    command: celery -A app.tasks beat --loglevel=info
+    volumes:
+      - ./data/parquet:/app/data
     restart: unless-stopped
     depends_on:
       redis:

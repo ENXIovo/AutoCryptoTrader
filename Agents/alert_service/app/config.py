@@ -5,8 +5,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     REDIS_URL: str = Field("redis://redis-server:6379/0", env="REDIS_URL")
-    REDIS_ZSET_KEY: str = Field("zset:news:top", env="REDIS_ZSET_KEY")
-    REDIS_HASH_PREFIX: str = Field("hash:news:label:", env="REDIS_HASH_PREFIX")
+    REDIS_ZSET_KEY: str = Field("news:top", env="REDIS_ZSET_KEY")
+    REDIS_HASH_PREFIX: str = Field("news:", env="REDIS_HASH_PREFIX")
+    REDIS_HISTORY_KEY: str = Field("alerts:history", env="REDIS_HISTORY_KEY")
+    REDIS_SENT_KEY: str = Field("alerts:sent", env="REDIS_SENT_KEY")
     ALERT_THRESHOLD: float = Field(0.7, env="ALERT_THRESHOLD")
     
     # Telegram Bot
