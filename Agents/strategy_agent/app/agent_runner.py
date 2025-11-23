@@ -39,35 +39,73 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
     - 使用 Redis Stream（XADD），天然按时间有序，便于按最新读取
     - 键名由 settings.analysis_results_stream_key 指定
     """
-    # 选用与你 Celery 一致的 Redis，优先 result_backend，没有就用 broker
-    r = redis.Redis.from_url(settings.redis_url)
-    ts = datetime.now(timezone.utc).isoformat()
+    print(f"[Storage] Redis URL: {settings.redis_url}")
+    print(f"[Storage] Stream Key: {settings.analysis_results_stream_key}")
+    
     try:
-        payload = json.dumps(report_data, ensure_ascii=False)
-    except TypeError:
-        payload = json.dumps(
-            {k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
-             for k, v in report_data.items()},
-            ensure_ascii=False
-        )
-    # 写入 Stream，自动按时间有序，支持 MAXLEN 修剪
-    try:
-        maxlen = int(getattr(settings, "analysis_results_stream_maxlen", 0))
-    except Exception:
-        maxlen = 0
-    xadd_kwargs = {}
-    if maxlen and maxlen > 0:
-        xadd_kwargs["maxlen"] = maxlen
-        xadd_kwargs["approximate"] = True  # 使用近似修剪以提高性能
+        # 选用与你 Celery 一致的 Redis
+        print(f"[Storage] 正在连接Redis...")
+        r = redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=5)
+        
+        # 测试连接
+        r.ping()
+        print(f"[Storage] ✅ Redis连接成功")
+        
+        ts = datetime.now(timezone.utc).isoformat()
+        print(f"[Storage] 时间戳: {ts}")
+        
+        try:
+            payload = json.dumps(report_data, ensure_ascii=False)
+            print(f"[Storage] Payload大小: {len(payload)} 字符")
+        except TypeError as e:
+            print(f"[Storage] ⚠️ JSON序列化失败，使用fallback: {e}")
+            payload = json.dumps(
+                {k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
+                 for k, v in report_data.items()},
+                ensure_ascii=False
+            )
+        
+        # 写入 Stream，自动按时间有序，支持 MAXLEN 修剪
+        try:
+            maxlen = int(getattr(settings, "analysis_results_stream_maxlen", 0))
+            print(f"[Storage] MaxLen: {maxlen}")
+        except Exception:
+            maxlen = 0
+            
+        xadd_kwargs = {}
+        if maxlen and maxlen > 0:
+            xadd_kwargs["maxlen"] = maxlen
+            xadd_kwargs["approximate"] = True  # 使用近似修剪以提高性能
 
-    r.xadd(
-        name=settings.analysis_results_stream_key,
-        fields={
-            "ts": ts,
-            "payload": payload,
-        },
-        **xadd_kwargs,
-    )
+        print(f"[Storage] 正在写入Redis Stream...")
+        entry_id = r.xadd(
+            name=settings.analysis_results_stream_key,
+            fields={
+                "ts": ts,
+                "payload": payload,
+            },
+            **xadd_kwargs,
+        )
+        
+        print(f"✅ 会议结果已存储到Redis Stream '{settings.analysis_results_stream_key}' (ID: {entry_id})")
+        
+        # 验证存储
+        stream_info = r.xinfo_stream(settings.analysis_results_stream_key)
+        print(f"[Storage] ✅ 验证: Stream长度 = {stream_info.get('length', 0)}")
+        
+    except redis.exceptions.ConnectionError as e:
+        print(f"❌ Redis连接失败: {e}")
+        print(f"   Redis URL: {settings.redis_url}")
+        print(f"   请检查Redis服务是否运行，以及URL是否正确")
+        raise
+    except redis.exceptions.TimeoutError as e:
+        print(f"❌ Redis连接超时: {e}")
+        raise
+    except Exception as e:
+        print(f"❌ 存储会议结果失败: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 # --- Helper: attach a concise userref snapshot for CTO/Executor ---
 def _build_userref_snapshot() -> str:
     """
@@ -330,10 +368,16 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
 
     print("--- Trading Strategy Meeting Ended ---")
 
+    # 存储会议结果
+    print(f"[Storage] 准备存储会议结果到Redis Stream '{settings.analysis_results_stream_key}'...")
     try:
         _store_analysis_results(final_reports)
+        print(f"[Storage] ✅ 存储成功")
     except Exception as e:
-        print(f"Failed to store analysis results: {e}")
+        print(f"[Storage] ❌ 存储失败: {e}")
+        import traceback
+        traceback.print_exc()
+        # 不抛出异常，避免影响会议结果的返回
 
     return final_reports
 

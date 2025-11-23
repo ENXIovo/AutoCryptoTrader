@@ -35,7 +35,7 @@ async def main():
             return
 
         source = event.chat.username or event.chat.title or str(event.chat_id)
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = str(datetime.now(timezone.utc).timestamp())  # Unix时间戳（字符串）
 
         # payload fields for Redis stream
         fields = {

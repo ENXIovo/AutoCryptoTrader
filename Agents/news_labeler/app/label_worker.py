@@ -17,29 +17,6 @@ from .utils.redis_utils import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("news_labeler.worker")
 
-# =============== 倍率规则（来源/分类） ===============
-def _source_factor(source: str) -> float:
-    s = (source or "").strip().lower()
-    for k, v in settings.source_factor_map.items():
-        if k in s:
-            return v
-    return 0.8
-
-def _category_factor(categories) -> float:
-    if not categories:
-        return 1.0
-    if isinstance(categories, str):
-        cats = [c.strip().lower() for c in categories.split(",") if c.strip()]
-    else:
-        cats = [str(c).strip().lower() for c in categories if str(c).strip()]
-    if not cats:
-        return 1.0
-    factors = [settings.category_factor_map.get(c, 1.0) for c in cats]
-    up = max([f for f in factors if f >= 1.0], default=1.0)
-    down = min([f for f in factors if f < 1.0], default=1.0)
-    return up * down
-
-# ====================================================
 
 def _decode(v: bytes | None) -> str:
     return v.decode() if isinstance(v, (bytes, bytearray)) else (v or "")
@@ -114,18 +91,14 @@ def _process_one(r, client: GPTClient, group: str, msg_id: str, fields: dict):
     logger.info("[process] id=%s src=%s key=%s", msg_id, source, key)
 
     try:
-        # if _is_whale_source(source):
-        #    _handle_whale(r, client, group, msg_id, key, text, source, ts)
-        # else:
-        #    _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
-        
         # 临时封杀 WhaleAlert 以减少噪音 (M0阶段)
         if _is_whale_source(source):
             logger.info("[process] skipping whale source %s", source)
-            xack(r, group, msg_id) # 即使跳过也要ACK，否则会一直堆积
+            xack(r, group, msg_id)  # 即使跳过也要ACK，否则会一直堆积
             return
-
-            _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
+        
+        # 非 whale source：使用 GPT 处理
+        _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
     except Exception as e:
         logger.exception("[process] failed id=%s key=%s: %s", msg_id, key, e)
         # 不 ACK，留给重试

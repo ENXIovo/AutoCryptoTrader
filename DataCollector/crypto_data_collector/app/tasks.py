@@ -14,6 +14,7 @@ from app.db import SessionLocal
 from app.models import MarketData
 from app.config import settings
 from app import crud
+from app.data_writer import data_writer
 from app.kraken_client import (
     get_ticker,
     get_order_book,
@@ -28,6 +29,12 @@ celery_app = Celery(
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
 )
+
+# 配置队列名称，避免与其他Celery app冲突
+celery_app.conf.task_default_queue = "data_collector"
+celery_app.conf.task_routes = {
+    "app.tasks.*": {"queue": "data_collector"},
+}
 
 celery_app.conf.beat_schedule = {
     "fetch-all-symbols-every-minute": {
@@ -169,6 +176,65 @@ def fetch_and_store_data_for_intervals(symbol: str, intervals: List[int]):
                 print(f"[Celery] No OHLC data for interval={interval}, skipping...")
                 continue
 
+            # ====== M2: 写入Parquet冷存储（只写入新K线） ======
+            last_candle_ts_key = f"parquet:last_candle_ts:{symbol}:{interval}"
+            last_candle_timestamp = redis_client.get(last_candle_ts_key)
+            
+            # 获取当前最新K线的时间戳
+            current_latest_timestamp = float(kline_list[-1][0]) if kline_list else None
+            if current_latest_timestamp is None:
+                # 没有K线数据，跳过
+                pass
+            elif last_candle_timestamp is None or current_latest_timestamp > float(last_candle_timestamp):
+                # 首次写入 或 有新K线：只写入新K线（时间戳 > last_candle_timestamp）
+                from datetime import date, datetime, timezone
+                from collections import defaultdict
+                
+                # 过滤：只保留新K线（首次写入则保留所有）
+                new_kline_list = []
+                if last_candle_timestamp is None:
+                    new_kline_list = kline_list  # 首次写入：写入所有K线
+                else:
+                    last_ts = float(last_candle_timestamp)
+                    new_kline_list = [item for item in kline_list if float(item[0]) > last_ts]
+                
+                if new_kline_list:
+                    # 获取可写日期范围（增量滚动存储）
+                    min_allowed_date, max_allowed_date = data_writer.get_writable_date_range(
+                        symbol=symbol,
+                        timeframe=f"{interval}m"
+                    )
+                    
+                    # 按日期分组新K线数据（使用UTC时区）
+                    ohlc_by_date = defaultdict(list)
+                    for item in new_kline_list:
+                        # 从Unix时间戳转换为UTC日期
+                        item_date = datetime.fromtimestamp(float(item[0]), tz=timezone.utc).date()
+                        ohlc_by_date[item_date].append(item)
+                    
+                    # 写入每个日期的Parquet文件（只处理可写日期）
+                    written_count = 0
+                    skipped_count = 0
+                    for item_date, items in ohlc_by_date.items():
+                        if min_allowed_date is not None and item_date < min_allowed_date:
+                            skipped_count += 1
+                            continue
+                        if item_date > max_allowed_date:
+                            skipped_count += 1
+                            continue
+                        
+                        try:
+                            if data_writer.write_ohlc_from_kraken(symbol, f"{interval}m", item_date, items):
+                                written_count += 1
+                        except Exception as e:
+                            print(f"[Celery] Failed to write OHLC to Parquet for {symbol} {interval}m {item_date}: {e}")
+                    
+                    # 更新最后写入的K线时间戳
+                    redis_client.set(last_candle_ts_key, str(current_latest_timestamp), ex=86400 * 7)
+                    
+                    if written_count > 0 or skipped_count > 0:
+                        print(f"[Celery] Parquet write: {symbol} {interval}m - Written: {written_count} dates, Skipped: {skipped_count} (protected), New candles: {len(new_kline_list)}")
+
             closes = [float(item[4]) for item in kline_list]
             highs = [float(item[2]) for item in kline_list]
             lows = [float(item[3]) for item in kline_list]
@@ -257,14 +323,9 @@ def fetch_and_store_data_for_intervals(symbol: str, intervals: List[int]):
             saved_record = crud.save_market_data(db, combined_data)
             print(f"[Celery] Data saved for interval={interval}, ID={saved_record.id}")
 
-        # ====== 4) 最终打印“整合后给 GPT 看”的数据 ======
-        print("[Celery] GPT DATA (Multi-Interval) =============================")
-        print(json.dumps(gpt_data, indent=2))
-        print("[Celery] ======================================================")
-
-        # ====== 存储到 Redis (覆盖式) ======
-        # 例如我们用 "gpt_data:<symbol>" 作为 key
-        redis_key = f"gpt_data:{symbol}"
+        # ====== 4) 存储到 Redis (覆盖式) ======
+        # 简化命名：data:{symbol}
+        redis_key = f"data:{symbol}"
         redis_value = json.dumps(gpt_data)
         # 设置一个TTL，比如 300 秒，也可以不设置
         redis_client.set(redis_key, redis_value, ex=300)

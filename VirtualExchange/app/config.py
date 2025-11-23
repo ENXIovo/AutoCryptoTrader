@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     
     # M2 DataStore 路径（历史K线数据存储位置）
     DATA_STORE_PATH: str = Field(
-        default="/app/data/candles",
+        default="/app/data",
         env="DATA_STORE_PATH",
-        description="Path to M2 DataStore candles directory (Parquet/CSV files)"
+        description="Path to M2 DataStore root directory (contains candles/ and news/ subdirectories)"
     )
-    
+
     # 回测时间轴配置
     BACKTEST_TIME_SCALE: float = Field(
         default=1.0,

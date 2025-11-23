@@ -12,4 +12,7 @@ class Settings(BaseSettings):
 
     SYMBOLS: list[str] = Field(default_factory=list, env="SYMBOLS")
 
+    # M2 DataStore 配置
+    DATA_STORE_PATH: str = Field(default="/app/data", env="DATA_STORE_PATH")
+
 settings = Settings()

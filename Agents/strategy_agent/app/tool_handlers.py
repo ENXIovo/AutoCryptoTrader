@@ -1,5 +1,6 @@
 import requests
 import logging
+from datetime import datetime, timezone, timedelta
 from .rrr import calc_rrr_batch
 from .config import settings
 from .tool_router import NewsClient, DataClient, ExchangeClient
@@ -86,11 +87,59 @@ def cancelOrder(**kwargs) -> dict:
     except Exception as e:
         return {"status": "err", "response": str(e)}
 
+def rescheduleMeeting(**kwargs) -> dict:
+    """
+    调度一次性的策略会议（覆盖下一次会议时间）
+    使用 Celery 的 apply_async 来延迟执行任务
+    """
+    countdown_minutes = kwargs.get("countdown_minutes", 60)
+    reason = kwargs.get("reason", "No reason provided")
+    
+    # 验证参数
+    if not isinstance(countdown_minutes, int) or countdown_minutes < 5 or countdown_minutes > 180:
+        return {
+            "status": "err",
+            "response": f"countdown_minutes must be between 5 and 180, got {countdown_minutes}"
+        }
+    
+    try:
+        # 导入 tasks 模块（延迟导入避免循环依赖）
+        from .tasks import run_strategy
+        
+        # 计算执行时间（UTC）
+        execute_time = datetime.now(timezone.utc) + timedelta(minutes=countdown_minutes)
+        
+        # 使用 Celery 的 apply_async 调度任务
+        result = run_strategy.apply_async(
+            eta=execute_time,
+            queue="auto_trade_queue"
+        )
+        
+        return {
+            "status": "ok",
+            "response": {
+                "message": f"Meeting rescheduled successfully",
+                "scheduled_time_utc": execute_time.isoformat(),
+                "countdown_minutes": countdown_minutes,
+                "reason": reason,
+                "task_id": result.id,
+                "note": "This is a one-off override. The regular 4-hour cadence will resume after this meeting."
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to reschedule meeting: {e}")
+        return {
+            "status": "err",
+            "response": f"Failed to reschedule meeting: {str(e)}"
+        }
+
 # Map handlers
 TOOL_HANDLERS = {
     "getTopNews": _getTopNews_fixed,
     "getKlineIndicators": data_client.getKlineIndicators,
     "getAccountInfo": _getAccountInfo,
     "placeOrder": placeOrder,
-    "cancelOrder": cancelOrder
+    "cancelOrder": cancelOrder,
+    "calcRRR": calcRRR,  # 添加 calcRRR
+    "rescheduleMeeting": rescheduleMeeting,  # 添加 rescheduleMeeting
 }
