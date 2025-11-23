@@ -1,4 +1,5 @@
 import datetime
+from datetime import timezone
 import openai
 from openai import AsyncOpenAI
 from typing import Dict, List, AsyncGenerator
@@ -67,7 +68,7 @@ class OpenAIAPI(APIManager):
                     "prompt_tokens": response.usage.prompt_tokens,
                     "completion_tokens": response.usage.completion_tokens,
                     "created_at": response.created_at,
-                    "received_at": int(datetime.datetime.now().timestamp()),
+                    "received_at": int(datetime.datetime.now(timezone.utc).timestamp()),
                     "response_id": response.id
                 },
             }
@@ -96,7 +97,7 @@ class OpenAIAPI(APIManager):
                 "prompt_tokens": response.usage.input_tokens,
                 "completion_tokens": response.usage.output_tokens,
                 "created_at": response.created_at,
-                "received_at": int(datetime.datetime.now().timestamp()),
+                "received_at": int(datetime.datetime.now(timezone.utc).timestamp()),
                 "response_id": response.id
             },
         }

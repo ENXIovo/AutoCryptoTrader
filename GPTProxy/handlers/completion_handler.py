@@ -3,6 +3,7 @@ import asyncio
 import json
 import tiktoken
 import datetime
+from datetime import timezone
 from services.session_manager import SessionManager
 from apis.api_manager_factory import APIManagerFactory
 from config import (
@@ -78,7 +79,7 @@ async def handle_user_message_stream(request, user, session_manager: SessionMana
         )
     )
     completion_tokens = encoder.encode(full_response)
-    received_at = int(datetime.datetime.now().timestamp())
+    received_at = int(datetime.datetime.now(timezone.utc).timestamp())
 
     merged_response = {
         "ai_message": full_response,

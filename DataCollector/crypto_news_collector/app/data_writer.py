@@ -1,10 +1,11 @@
 """
 News Data Writer - 单职责：将已标注的News数据写入Parquet冷存储
 从Redis读取已标注的新闻，按日期分区写入Parquet文件
+统一使用UTC时区
 """
 import logging
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import pandas as pd
 
@@ -43,7 +44,7 @@ class NewsDataWriter:
         Returns:
             (min_allowed_date, max_allowed_date) 或 (None, today)
         """
-        current_date = date.today()
+        current_date = datetime.now(timezone.utc).date()  # 使用UTC日期
         
         if not self.news_path.exists():
             return (None, current_date)
@@ -109,7 +110,7 @@ class NewsDataWriter:
         
         # 找到最新日期
         latest_date = max(existing_dates)
-        current_date = date.today()
+        current_date = datetime.now(timezone.utc).date()  # 使用UTC日期
         
         # 允许写入的日期：最新日期-1 到 今天
         min_allowed_date = latest_date - timedelta(days=1)

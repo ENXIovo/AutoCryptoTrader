@@ -2,6 +2,7 @@
 Data Writer - 单职责：将实时数据写入Parquet冷存储
 从MySQL/Redis读取数据，按日期分区写入Parquet文件
 减少冗余：只存储回测需要的字段
+统一使用UTC时区
 """
 import logging
 import os
@@ -125,7 +126,7 @@ class DataWriter:
         
         # 找到最新日期
         latest_date = max(existing_dates)
-        current_date = date.today()
+        current_date = datetime.now(timezone.utc).date()  # 使用UTC日期
         
         # 允许写入的日期：最新日期-1 到 今天
         min_allowed_date = latest_date - timedelta(days=1)
@@ -188,7 +189,19 @@ class DataWriter:
             data_list = []
             for record in records:
                 # 从created_at提取timestamp（Unix时间戳）
-                timestamp = record.created_at.timestamp() if record.created_at else 0.0
+                # 确保created_at是UTC aware（即使数据库存储了时区信息）
+                if record.created_at:
+                    if record.created_at.tzinfo is None:
+                        # 如果没有时区信息，假设是UTC
+                        created_at_utc = record.created_at.replace(tzinfo=timezone.utc)
+                    elif record.created_at.tzinfo != timezone.utc:
+                        # 如果有其他时区，转换为UTC
+                        created_at_utc = record.created_at.astimezone(timezone.utc)
+                    else:
+                        created_at_utc = record.created_at
+                    timestamp = created_at_utc.timestamp()
+                else:
+                    timestamp = 0.0
                 
                 # 只存储回测需要的字段
                 # 注意：MySQL中存储的是latest_price，但我们需要从OHLC数据中提取

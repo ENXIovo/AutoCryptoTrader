@@ -30,8 +30,8 @@ class ErrorResponse(BaseModel):
 
 
 def now_tz():
-    # 获取当前的 UTC 时间
-    return datetime.datetime.utcnow()
+    # 获取当前的 UTC 时间（使用timezone.utc替代已废弃的utcnow）
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 class ChatMessage(BaseModel):

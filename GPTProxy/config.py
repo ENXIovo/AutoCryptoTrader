@@ -82,7 +82,7 @@ Environment Variables:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Deployment Configuration
 # Options:
@@ -110,7 +110,7 @@ ENDPOINT_CONFIGS = {
 DEFAULT_SYSTEM_MESSAGE = f"""
 You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
-Current date: {datetime.now().strftime('%Y-%m-%d')}
+Current date: {datetime.now(timezone.utc).strftime('%Y-%m-%d')}
 
 Engage warmly yet honestly with the user. Be direct; avoid ungrounded or sycophantic flattery. Maintain professionalism and grounded honesty.
 

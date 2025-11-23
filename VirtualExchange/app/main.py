@@ -1,11 +1,12 @@
 """
 FastAPI Application - 单职责：API层
 提供交易接口和数据Mock接口（统一接口，对Strategy Agent透明）
+统一使用UTC时区
 """
 import logging
-import time
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from app.utils.time_utils import utc_timestamp, parse_utc_datetime, ensure_utc
 
 from fastapi import FastAPI, HTTPException
 
@@ -50,7 +51,7 @@ async def place_order(order: PlaceOrderRequest) -> Dict[str, Any]:
         pair = f"{order.coin}USDT"
         
         # 生成订单ID
-        txid = f"order_{int(time.time() * 1000)}"
+        txid = f"order_{int(utc_timestamp() * 1000)}"
         
         # 确定订单类型
         ordertype = "market" if order.limit_px == 0 else "limit"
@@ -63,9 +64,9 @@ async def place_order(order: PlaceOrderRequest) -> Dict[str, Any]:
             ordertype=ordertype,
             volume=order.sz,
             status="open",
-            userref=int(time.time() * 1000) % 1000000,  # 简化：使用时间戳作为userref
+            userref=int(utc_timestamp() * 1000) % 1000000,  # 简化：使用时间戳作为userref
             price=order.limit_px if order.limit_px > 0 else None,
-            created_at=time.time(),
+            created_at=utc_timestamp(),
             stop_loss=order.stop_loss,
             take_profit=order.take_profit
         )
@@ -130,7 +131,7 @@ async def cancel_order(req: CancelOrderRequest) -> Dict[str, Any]:
         
         # 取消订单
         order.status = "canceled"
-        order.canceled_at = time.time()
+        order.canceled_at = utc_timestamp()
         order.canceled_reason = "User canceled"
         
         # 退款
@@ -333,8 +334,11 @@ async def run_backtest(req: Dict[str, Any]) -> Dict[str, Any]:
     try:
         symbol = req.get("symbol", "BTCUSDT")
         timeframe = req.get("timeframe", "1m")
-        start_time = datetime.fromisoformat(req.get("start_time", "2024-01-01T00:00:00Z").replace("Z", "+00:00"))
-        end_time = datetime.fromisoformat(req.get("end_time", "2024-01-07T23:59:59Z").replace("Z", "+00:00"))
+        # 解析时间并确保为UTC
+        start_time_str = req.get("start_time", "2024-01-01T00:00:00Z")
+        end_time_str = req.get("end_time", "2024-01-07T23:59:59Z")
+        start_time = parse_utc_datetime(start_time_str) or ensure_utc(datetime.fromisoformat(start_time_str.replace("Z", "+00:00")))
+        end_time = parse_utc_datetime(end_time_str) or ensure_utc(datetime.fromisoformat(end_time_str.replace("Z", "+00:00")))
         
         # 创建新的回测运行器
         runner = BacktestRunner()

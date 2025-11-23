@@ -38,8 +38,9 @@ def view_parquet_file(file_path: str, limit: Optional[int] = None):
         
         # 时间范围（如果有timestamp列）
         if 'timestamp' in df.columns:
-            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-            print(f"\n⏰ 时间范围:")
+            # 确保时间戳解析为UTC时区
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s', utc=True)
+            print(f"\n⏰ 时间范围 (UTC):")
             print(f"  开始: {df['datetime'].min()}")
             print(f"  结束: {df['datetime'].max()}")
             print(f"  跨度: {(df['datetime'].max() - df['datetime'].min()).total_seconds() / 3600:.2f} 小时")

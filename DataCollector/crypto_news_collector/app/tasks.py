@@ -59,8 +59,8 @@ def archive_news_to_parquet():
         # 连接Redis
         r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
         
-        # 获取昨天的日期（避免写入未完成的当天数据）
-        target_date = date.today() - timedelta(days=1)
+        # 获取昨天的日期（避免写入未完成的当天数据，使用UTC）
+        target_date = datetime.now(timezone.utc).date() - timedelta(days=1)
         start_ts = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc).timestamp()
         end_ts = datetime.combine(target_date, datetime.max.time()).replace(tzinfo=timezone.utc).timestamp()
         

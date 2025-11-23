@@ -1,7 +1,10 @@
-import time
+"""
+Redis Service - 统一使用UTC时区
+"""
 import logging
 import redis
 from typing import List, Tuple, Dict, Optional
+from datetime import datetime, timezone
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -39,7 +42,9 @@ class RedisService:
 
     def add_to_history(self, key: str, score: float, summary: str):
         """Add alert record to history list for observability."""
-        history_entry = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {key} | {score:.2f} | {summary}"
+        # 使用UTC时间
+        utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        history_entry = f"{utc_time} | {key} | {score:.2f} | {summary}"
         self.client.lpush(settings.REDIS_HISTORY_KEY, history_entry)
         self.client.ltrim(settings.REDIS_HISTORY_KEY, 0, 99)  # Keep last 100 alerts
 

@@ -47,8 +47,15 @@ def recompute_scores(window_hours: Optional[int] = None) -> Dict[str, int]:
 
         ts = _d(b"ts")
         dt = parse_ts(ts)
-        if threshold and dt and dt.replace(tzinfo=timezone.utc) < threshold:
-            continue
+        # parse_ts 已经返回UTC aware datetime，确保时区一致
+        if threshold and dt:
+            # 确保dt是UTC aware（parse_ts应该已经返回UTC，但双重保险）
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            elif dt.tzinfo != timezone.utc:
+                dt = dt.astimezone(timezone.utc)
+            if dt < threshold:
+                continue
 
         try:
             importance = float(_d(b"importance") or 0.0)

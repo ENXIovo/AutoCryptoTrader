@@ -1,10 +1,12 @@
 """
 Wallet Management - 单职责：简单钱包管理
 单账本余额跟踪，无复杂的冻结/解冻逻辑
+统一使用UTC时区
 """
 import logging
 from typing import Dict, Optional
 from app.models import VirtualOrder, VirtualPosition, VirtualTrade
+from app.utils.time_utils import utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -105,17 +107,15 @@ class Wallet:
         Returns:
             VirtualTrade: 成交记录
         """
-        import time
-        
         trade = VirtualTrade(
-            txid=f"trade_{int(time.time() * 1000)}_{len(self.trades)}",
+            txid=f"trade_{int(utc_timestamp() * 1000)}_{len(self.trades)}",
             order_txid=order.txid,
             pair=order.pair,
             type=order.type,
             volume=fill_volume,
             price=fill_price,
             cost=fill_volume * fill_price,
-            timestamp=time.time()
+            timestamp=utc_timestamp()
         )
         
         self.trades.append(trade)

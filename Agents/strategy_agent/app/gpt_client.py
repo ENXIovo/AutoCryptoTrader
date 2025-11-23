@@ -6,6 +6,16 @@ from email.utils import parsedate_to_datetime
 from pydantic import ValidationError
 from .models import MessageRequest, MessageResponse
 
+
+def utc_timestamp() -> float:
+    """
+    获取当前UTC时间戳（Unix timestamp）
+    
+    Returns:
+        UTC时间戳（float）
+    """
+    return datetime.now(timezone.utc).timestamp()
+
 class GPTClient:
     """
     仅负责跟 GPT-Proxy HTTP 通信
@@ -83,7 +93,7 @@ class GPTClient:
             if key in headers:
                 try:
                     reset_epoch = float(headers[key])
-                    now_epoch = time.time()
+                    now_epoch = utc_timestamp()  # UTC时间戳
                     delta = reset_epoch - now_epoch
                     if delta > 0:
                         return max(0.5, min(delta + random.uniform(0.5, 1.5), 120.0))
@@ -91,7 +101,7 @@ class GPTClient:
                     continue
 
         # 3) 对齐到下一分钟（TPM 刷新）
-        now = time.time()
+        now = utc_timestamp()  # UTC时间戳
         seconds_to_next_minute = 60.0 - (now % 60.0)
         # 保守一些，加上少量抖动
         return max(1.0, min(seconds_to_next_minute + random.uniform(0.5, 1.5), 70.0))

@@ -1,6 +1,7 @@
 """
 Data Loader - 单职责：从Parquet冷存储加载数据
 提供统一的访问API：load_candles, load_news
+统一使用UTC时区
 """
 import logging
 from pathlib import Path
@@ -9,6 +10,23 @@ from datetime import datetime, date, timedelta, timezone
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    """
+    确保datetime对象是UTC aware
+    
+    Args:
+        dt: datetime对象（可能没有时区信息）
+        
+    Returns:
+        UTC aware datetime对象
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    elif dt.tzinfo != timezone.utc:
+        return dt.astimezone(timezone.utc)
+    return dt
 
 
 def load_candles(
@@ -72,10 +90,8 @@ def load_candles(
     # 过滤时间范围（确保使用UTC时间戳）
     if "timestamp" in combined_df.columns:
         # 确保 start 和 end 是 UTC aware
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=timezone.utc)
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+        start = ensure_utc(start)
+        end = ensure_utc(end)
         start_ts = start.timestamp()
         end_ts = end.timestamp()
         combined_df = combined_df[
@@ -146,10 +162,8 @@ def load_news(
     
     # 过滤时间范围：统一使用timestamp字段（Unix时间戳，UTC）
     # 确保 start 和 end 是 UTC aware
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=timezone.utc)
+    start = ensure_utc(start)
+    end = ensure_utc(end)
     start_ts = start.timestamp()
     end_ts = end.timestamp()
     
@@ -166,8 +180,9 @@ def load_news(
             # 如果转换失败，尝试解析ISO字符串
             mask = combined_df["timestamp"].isna()
             if mask.any():
+                # 确保解析为UTC aware datetime
                 combined_df.loc[mask, "timestamp"] = pd.to_datetime(
-                    combined_df.loc[mask, "ts"]
+                    combined_df.loc[mask, "ts"], utc=True
                 ).apply(lambda x: x.timestamp() if pd.notna(x) else None)
             # 过滤时间范围
             combined_df = combined_df[

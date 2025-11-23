@@ -47,12 +47,15 @@ def view_results(redis_url: str = REDIS_URL, stream_key: str = STREAM_KEY, count
             print(f"📝 记录 #{i} (ID: {entry_id})")
             print(f"{'=' * 80}")
             
-            # 解析时间戳
+            # 解析时间戳（确保UTC时区）
             ts = fields.get("ts", "")
             if ts:
                 try:
                     dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    print(f"⏰ 时间: {dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                    # 确保是UTC aware
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    print(f"⏰ 时间 (UTC): {dt.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                 except:
                     print(f"⏰ 时间: {ts}")
             

@@ -1,14 +1,16 @@
 """
 Data Loader - 单职责：从M2 DataStore加载历史K线数据
 支持Parquet/CSV格式，按日期分区
+统一使用UTC时区
 """
 import logging
 import os
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pandas as pd
 from app.models import OHLC
+from app.utils.time_utils import ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +49,16 @@ class DataLoader:
         Args:
             symbol: 交易对，如 "BTCUSDT"
             timeframe: 时间周期，如 "1m", "5m", "1h"
-            start_time: 开始时间
-            end_time: 结束时间
+            start_time: 开始时间（自动转换为UTC）
+            end_time: 结束时间（自动转换为UTC）
             
         Returns:
             OHLC列表
         """
+        # 确保时区为UTC
+        start_time = ensure_utc(start_time)
+        end_time = ensure_utc(end_time)
+        
         candles = []
         current_date = start_time.date()
         end_date = end_time.date()
@@ -67,10 +73,13 @@ class DataLoader:
                     df = pd.read_parquet(file_path)
                     
                     # 标准化列名（支持多种格式）
+                    # 确保所有时间戳都使用UTC时区
                     if "timestamp" not in df.columns and "time" in df.columns:
-                        df["timestamp"] = pd.to_datetime(df["time"]).astype(int) / 1000
+                        # 如果time列是字符串/日期格式，转换为UTC aware datetime再转时间戳
+                        df["timestamp"] = pd.to_datetime(df["time"], utc=True).astype(int) / 1000
                     elif "timestamp" not in df.columns and "ts" in df.columns:
-                        df["timestamp"] = pd.to_datetime(df["ts"]).astype(int) / 1000
+                        # 如果ts列是字符串/日期格式，转换为UTC aware datetime再转时间戳
+                        df["timestamp"] = pd.to_datetime(df["ts"], utc=True).astype(int) / 1000
                     
                     # 过滤时间范围
                     if "timestamp" in df.columns:

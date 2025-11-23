@@ -1,6 +1,6 @@
 import redis.asyncio as redis
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from schemas.chat_schemas import ChatSession, ChatMessage
 from config import (
@@ -96,9 +96,12 @@ class RedisStore:
             if not session_info:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found in Redis.")
             
-            # 对日期时间字符串进行转换
+            # 对日期时间字符串进行转换（确保UTC）
             if 'created_at' in session_info:
-                session_info['created_at'] = datetime.fromisoformat(session_info['created_at'])
+                dt = datetime.fromisoformat(session_info['created_at'])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                session_info['created_at'] = dt
             
             session = ChatSession(**session_info)
 
@@ -106,7 +109,10 @@ class RedisStore:
             system_message_info = {k.decode("utf-8"): v.decode("utf-8") for k, v in system_message_info.items()}
 
             if 'created_at' in system_message_info:
-                system_message_info['created_at'] = datetime.fromisoformat(system_message_info['created_at'])
+                dt = datetime.fromisoformat(system_message_info['created_at'])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                system_message_info['created_at'] = dt
             session.system_message = ChatMessage(**system_message_info)
             
             messages_scores = await self.redis_client.zrange(messages_key, 0, -1, withscores=True)

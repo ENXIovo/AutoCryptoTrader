@@ -1,11 +1,12 @@
 """
 Matching Engine - 单职责：非实时撮合引擎
 基于1分钟K线数据，支持时间轴加速
+统一使用UTC时区
 """
 import logging
-import time
 from typing import List, Optional, Dict, Any
 from app.models import VirtualOrder, OHLC
+from app.utils.time_utils import utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -200,13 +201,12 @@ class MatchingEngine:
             TPSL订单列表
         """
         tpsl_orders = []
-        import time
         
         if main_order.stop_loss:
             sl_price = main_order.stop_loss.get("price")
             if sl_price:
                 sl_order = VirtualOrder(
-                    txid=f"sl_{main_order.txid}_{int(time.time() * 1000)}",
+                    txid=f"sl_{main_order.txid}_{int(utc_timestamp() * 1000)}",
                     pair=main_order.pair,
                     type="sell" if main_order.type == "buy" else "buy",  # 反向
                     ordertype="limit",
@@ -214,7 +214,7 @@ class MatchingEngine:
                     status="open",
                     userref=main_order.userref,
                     price=sl_price,
-                    created_at=time.time(),
+                    created_at=utc_timestamp(),
                     parent_txid=main_order.txid,
                     tpsl_type="sl",
                     stop_loss={"price": sl_price}
@@ -226,7 +226,7 @@ class MatchingEngine:
             tp_price = main_order.take_profit.get("price")
             if tp_price:
                 tp_order = VirtualOrder(
-                    txid=f"tp_{main_order.txid}_{int(time.time() * 1000)}",
+                    txid=f"tp_{main_order.txid}_{int(utc_timestamp() * 1000)}",
                     pair=main_order.pair,
                     type="sell" if main_order.type == "buy" else "buy",  # 反向
                     ordertype="limit",
@@ -234,7 +234,7 @@ class MatchingEngine:
                     status="open",
                     userref=main_order.userref,
                     price=tp_price,
-                    created_at=time.time(),
+                    created_at=utc_timestamp(),
                     parent_txid=main_order.txid,
                     tpsl_type="tp",
                     take_profit={"price": tp_price}
@@ -257,7 +257,6 @@ class MatchingEngine:
         Args:
             triggered_txid: 已触发的订单ID
         """
-        import time
         triggered_order = self.orders.get(triggered_txid)
         if not triggered_order or not triggered_order.parent_txid:
             return
@@ -268,7 +267,7 @@ class MatchingEngine:
                 order.parent_txid == triggered_order.parent_txid and 
                 order.status == "open"):
                 order.status = "canceled"
-                order.canceled_at = time.time()
+                order.canceled_at = utc_timestamp()
                 order.canceled_reason = "OCO: other side triggered"
                 logger.info(f"[MatchingEngine] Canceled OCO pair order {txid} due to {triggered_txid} trigger")
 

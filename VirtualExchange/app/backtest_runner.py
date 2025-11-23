@@ -1,11 +1,12 @@
 """
 Backtest Runner - 单职责：回测运行器
 加载历史数据，按时间轴加速执行，生成回测报告
+统一使用UTC时区
 """
 import logging
-import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from app.utils.time_utils import ensure_utc
 from app.models import VirtualOrder, OHLC, BacktestReport
 from app.matching_engine import MatchingEngine
 from app.wallet import Wallet
@@ -58,6 +59,10 @@ class BacktestRunner:
         Returns:
             回测报告
         """
+        # 确保时区为UTC
+        start_time = ensure_utc(start_time)
+        end_time = ensure_utc(end_time)
+        
         logger.info(f"[BacktestRunner] Starting backtest: {symbol} {timeframe} from {start_time} to {end_time}")
         
         # 1. 加载历史K线数据
