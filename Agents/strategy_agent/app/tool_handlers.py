@@ -7,12 +7,33 @@ from .tool_router import NewsClient, DataClient, ExchangeClient
 
 logger = logging.getLogger(__name__)
 
-# 实例化路由器
-news_client = NewsClient(settings.news_service_url)
-data_client = DataClient(settings.data_service_url)
-exchange_client = ExchangeClient(settings.trading_url)
+# 全局回测时间戳（用于回测模式）
+_backtest_timestamp: Optional[float] = None
+
+def set_backtest_timestamp(timestamp: Optional[float]) -> None:
+    """设置回测时间戳（用于回测模式）"""
+    global _backtest_timestamp
+    _backtest_timestamp = timestamp
+
+def get_backtest_timestamp() -> Optional[float]:
+    """获取回测时间戳"""
+    return _backtest_timestamp
+
+# 实例化路由器（延迟初始化，支持回测模式）
+def _get_clients():
+    """获取客户端实例（支持回测模式）"""
+    return (
+        NewsClient(settings.news_service_url, backtest_timestamp=_backtest_timestamp),
+        DataClient(settings.data_service_url, backtest_timestamp=_backtest_timestamp),
+        ExchangeClient(settings.trading_url)
+    )
+
+# 默认实例（实时模式）
+news_client, data_client, exchange_client = _get_clients()
 
 def _getTopNews_fixed(**_ignored) -> list[dict]:
+    # 每次调用时获取最新的客户端（支持回测模式）
+    news_client, _, _ = _get_clients()
     return news_client.getTopNews(limit=settings.news_top_limit, period=None)
 
 def calcRRR(**kwargs) -> dict:
@@ -34,10 +55,14 @@ def _getAccountInfo(**_ignored) -> dict:
         return {"error": str(e)}
 
 def placeOrder(**kwargs) -> dict:
-    """Calls POST /exchange/order with required TPSL support (OCO format)"""
-    # Hyperliquid-Lite expects: {coin, is_buy, sz, limit_px, order_type: {...}}
-    # Schema: {coin, is_buy, sz, limit_px, stop_loss: {price}, take_profit: {price}}
-    # We map 'limit_px=0' -> Market
+    """
+    Calls POST /exchange/order with required TPSL support (OCO format)
+    
+    回测模式：在回测模式下，订单会被收集而不是立即执行。
+    订单信息会从 tool_calls 中提取，然后在回测编排器中统一处理。
+    """
+    # 检查是否在回测模式
+    backtest_timestamp = get_backtest_timestamp()
     
     coin = kwargs.get("coin")
     limit_px = float(kwargs.get("limit_px") or 0.0)
@@ -61,6 +86,25 @@ def placeOrder(**kwargs) -> dict:
         return {"status": "err", "response": "take_profit is required and must be an object with 'price' field"}
     payload["take_profit"] = take_profit
     
+    # 回测模式：返回模拟成功响应，订单会从 tool_calls 中提取
+    if backtest_timestamp:
+        logger.info(f"[placeOrder] Backtest mode: Order recorded (not executed) - {coin} {'BUY' if kwargs.get('is_buy') else 'SELL'} {kwargs.get('sz')} @ {limit_px}")
+        return {
+            "status": "ok",
+            "response": {
+                "data": {
+                    "statuses": [{
+                        "resting": {
+                            "oid": hash(f"{backtest_timestamp}_{coin}_{kwargs.get('is_buy')}") % 1000000000
+                        }
+                    }]
+                },
+                "backtest_mode": True,
+                "note": "Order recorded for backtest execution"
+            }
+        }
+    
+    # 生产模式：实际调用 exchange
     # Construct internal HL-style order_type
     if limit_px <= 0:
         payload["order_type"] = {"market": {}}
@@ -75,7 +119,22 @@ def placeOrder(**kwargs) -> dict:
         return {"status": "err", "response": str(e)}
 
 def cancelOrder(**kwargs) -> dict:
-    """Calls POST /exchange/cancel"""
+    """
+    Calls POST /exchange/cancel
+    
+    回测模式：在回测模式下，取消订单会被记录但不会立即执行。
+    """
+    # 检查是否在回测模式
+    backtest_timestamp = get_backtest_timestamp()
+    
+    if backtest_timestamp:
+        logger.info(f"[cancelOrder] Backtest mode: Cancel order recorded (not executed) - oid={kwargs.get('oid')}")
+        return {
+            "status": "ok",
+            "response": {"data": "Order cancel recorded for backtest", "backtest_mode": True}
+        }
+    
+    # 生产模式：实际调用 exchange
     payload = {
         "coin": kwargs.get("coin"),
         "oid": kwargs.get("oid")
@@ -133,10 +192,15 @@ def rescheduleMeeting(**kwargs) -> dict:
             "response": f"Failed to reschedule meeting: {str(e)}"
         }
 
+def _getKlineIndicators(symbol: str, **_ignored) -> dict:
+    """Wrapper for getKlineIndicators (支持回测模式)"""
+    _, data_client, _ = _get_clients()
+    return data_client.getKlineIndicators(symbol)
+
 # Map handlers
 TOOL_HANDLERS = {
     "getTopNews": _getTopNews_fixed,
-    "getKlineIndicators": data_client.getKlineIndicators,
+    "getKlineIndicators": _getKlineIndicators,
     "getAccountInfo": _getAccountInfo,
     "placeOrder": placeOrder,
     "cancelOrder": cancelOrder,

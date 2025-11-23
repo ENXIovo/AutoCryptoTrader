@@ -8,9 +8,12 @@ import json
 import os
 import redis
 import requests
+import logging
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 # CHANGED: 导入 get_trade_universe
 from .config import get_agent_configs, settings, get_trade_universe 
 from .gpt_client import GPTClient
@@ -107,13 +110,17 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
         traceback.print_exc()
         raise
 # --- Helper: attach a concise userref snapshot for CTO/Executor ---
-def _build_userref_snapshot() -> str:
+def _build_userref_snapshot(backtest_timestamp: Optional[float] = None) -> str:
     """
     Fetch Clearinghouse State (Account Info) and format for Agent context.
     Shows Balance and Open Orders.
+    
+    Args:
+        backtest_timestamp: 可选，回测模式下的历史时间戳
     """
     try:
-        # We use the requests logic similar to tool_handler but inline here for context building
+        # 在回测模式下，仍然尝试获取账户状态
+        # 注意：在回测编排器中，账户状态会在每个时间点更新
         resp = requests.post(f"{settings.trading_url.rstrip('/')}/info", json={"type": "clearinghouseState"}, timeout=5)
         resp.raise_for_status()
         state = resp.json()
@@ -134,15 +141,26 @@ def _build_userref_snapshot() -> str:
                 lines.append(f"- {o.get('coin')} {side} {o.get('sz')} @ {o.get('limitPx')} (oid: {o.get('oid')})")
             orders_str = "Open Orders:\n" + "\n".join(lines)
         
-        return f"{balance_str}\n\n{orders_str}"
+        snapshot = f"{balance_str}\n\n{orders_str}"
+        if backtest_timestamp:
+            snapshot += f"\n[Backtest Mode: {datetime.fromtimestamp(backtest_timestamp, tz=timezone.utc).isoformat()}]"
+        
+        return snapshot
     except Exception as e:
         return f"Account Snapshot Unavailable: {e}"
 
 
 # --- Helper: attach last_price snapshot from DataCollector for CTO ---
-def _build_last_price_snapshot() -> str:
+def _build_last_price_snapshot(backtest_timestamp: Optional[float] = None) -> str:
+    """
+    获取价格快照（支持回测模式）
+    
+    Args:
+        backtest_timestamp: 可选，回测模式下的历史时间戳
+    """
     try:
-        dc = DataClient(settings.data_service_url)
+        # DataClient 会自动使用回测时间戳（通过 tool_handlers 的设置）
+        dc = DataClient(settings.data_service_url, backtest_timestamp=backtest_timestamp)
         symbols = get_trade_universe()
         lines: list[str] = []
         
@@ -185,13 +203,62 @@ def _build_last_price_snapshot() -> str:
                 continue
         if not lines:
             return "No last_price snapshot available."
-        return "Live Ticker (last_price only):\n" + "\n".join(lines)
+        
+        header = "Live Ticker (last_price only):"
+        if backtest_timestamp:
+            header = f"Historical Ticker at {datetime.fromtimestamp(backtest_timestamp, tz=timezone.utc).isoformat()}:"
+        
+        return f"{header}\n" + "\n".join(lines)
     except Exception:
         return "Live Ticker snapshot unavailable."
 
 
 
 # REMOVED: 本地的 _get_trade_universe 函数已被删除，因为它现在从 config.py 导入
+
+
+def _extract_orders_from_cto_result(cto_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    从CTO的响应中提取订单信息
+    
+    Args:
+        cto_result: CTO的分析结果，包含tool_calls
+        
+    Returns:
+        订单列表（每个订单包含coin, is_buy, sz, limit_px, stop_loss, take_profit）
+    """
+    orders = []
+    
+    # 从tool_calls中提取placeOrder调用
+    tool_calls = cto_result.get("tool_calls", [])
+    if not tool_calls:
+        return orders
+    
+    for call in tool_calls:
+        if call.get("type") == "function_call" and call.get("name") == "placeOrder":
+            try:
+                import json
+                args = json.loads(call.get("arguments", "{}"))
+                
+                # 提取订单参数
+                order = {
+                    "coin": args.get("coin"),
+                    "is_buy": args.get("is_buy"),
+                    "sz": args.get("sz"),
+                    "limit_px": args.get("limit_px", 0.0),
+                    "stop_loss": args.get("stop_loss"),
+                    "take_profit": args.get("take_profit"),
+                    "reduce_only": args.get("reduce_only", False)
+                }
+                
+                # 验证必需字段
+                if order["coin"] and order["stop_loss"] and order["take_profit"]:
+                    orders.append(order)
+            except Exception as e:
+                logger.warning(f"[_extract_orders_from_cto_result] Failed to parse order: {e}")
+                continue
+    
+    return orders
 
 
 async def _analyze_agent(
@@ -238,18 +305,36 @@ async def _analyze_agent(
         "error": str(last_err) if last_err else "unknown",
     }
 
-async def run_agents_in_sequence_async() -> Dict[str, Any]:
+async def run_agents_in_sequence_async(
+    backtest_timestamp: Optional[float] = None  # 回测模式：历史时间戳
+) -> Dict[str, Any]:
     """
     新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO（CTO 直接执行工具）。
+    
+    Args:
+        backtest_timestamp: 可选，回测模式下的历史时间戳（Unix秒）
     """
     print("--- Starting Trading Strategy Meeting (New Workflow) ---")
 
-    current_utc_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
-    agent_configs = [c for c in get_agent_configs() if c.get("enabled")]
-    print(f"Meeting Start Time: {current_utc_time}\n")
+    # 确定使用的时间：回测模式使用传入时间戳，否则使用当前时间
+    if backtest_timestamp:
+        meeting_dt = datetime.fromtimestamp(backtest_timestamp, tz=timezone.utc)
+        current_utc_time = meeting_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        print(f"[BACKTEST MODE] Meeting Time: {current_utc_time}\n")
+    else:
+        meeting_dt = datetime.now(timezone.utc)
+        current_utc_time = meeting_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+        print(f"Meeting Start Time: {current_utc_time}\n")
 
+    agent_configs = [c for c in get_agent_configs() if c.get("enabled")]
     meeting_context_header = f"# Meeting started at: {current_utc_time}\n"
-    final_reports: Dict[str, Any] = {"_meta": {"start_time_utc": current_utc_time}}
+    final_reports: Dict[str, Any] = {
+        "_meta": {
+            "start_time_utc": current_utc_time,
+            "backtest_mode": backtest_timestamp is not None,
+            "backtest_timestamp": backtest_timestamp
+        }
+    }
 
     # 识别各角色配置
     cfg_by_name = {c["name"]: c for c in agent_configs}
@@ -333,7 +418,12 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
             final_context_for_cto += f"\n\n## Report from Risk Manager:\n{final_reports.get('Risk Manager', {}).get('content','')}"
 
         # Compute and inject scheduling context for CTO
-        now_dt = datetime.now(timezone.utc)
+        # 使用回测时间点或当前时间
+        if backtest_timestamp:
+            now_dt = datetime.fromtimestamp(backtest_timestamp, tz=timezone.utc)
+        else:
+            now_dt = datetime.now(timezone.utc)
+        
         # Find next default meeting time at :05 UTC where hour % 4 == 0
         candidate = now_dt.replace(minute=5, second=0, microsecond=0)
         if candidate <= now_dt:
@@ -352,9 +442,13 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
         )
 
         # Attach userref snapshot for decision context
-        final_context_for_cto += f"\n\n## Userref Snapshot\n{_build_userref_snapshot()}\n"
+        # 在回测模式下，账户状态可能还不完整，但仍然尝试获取
+        userref_snapshot = _build_userref_snapshot(backtest_timestamp=backtest_timestamp)
+        final_context_for_cto += f"\n\n## Userref Snapshot\n{userref_snapshot}\n"
         # Attach last price snapshot for limit-order validation guidance
-        final_context_for_cto += f"\n\n## Live Ticker\n{_build_last_price_snapshot()}\n"
+        # 在回测模式下，使用历史数据（通过 DataClient 的回测模式支持）
+        last_price_snapshot = _build_last_price_snapshot(backtest_timestamp=backtest_timestamp)
+        final_context_for_cto += f"\n\n## Live Ticker\n{last_price_snapshot}\n"
 
         cto_result = await _analyze_agent(
             cto_cfg,
@@ -362,6 +456,12 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
         )
         final_reports["Chief Trading Officer"] = cto_result
         print(f"[Chief Trading Officer] responded:\n{cto_result.get('content','')}\n")
+        
+        # 提取订单信息（从CTO的tool_calls中）
+        orders_placed = _extract_orders_from_cto_result(cto_result)
+        if orders_placed:
+            final_reports["_orders"] = orders_placed
+            print(f"[CTO] Placed {len(orders_placed)} orders")
 
     # Stage 5 removed: CTO executes directly with tools
 

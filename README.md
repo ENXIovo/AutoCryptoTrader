@@ -77,9 +77,88 @@ AutoCryptoTrader is a multi-service, GPT-powered quantitative assistant designed
 ### 📊 M3: Backtest V0 (Single-Asset/Single-Strategy)
 **Pipeline:** `Historical Data (M2)` → `Backtest Engine` → `Virtual Matching (M1)` → `Performance Report`
 
-**Goal:** Quantitatively validate a specific strategy using historical data to obtain Win Rate, R/R, and Drawdown metrics.
+**Goal:** Quantitatively validate a specific strategy using historical data to obtain Win Rate, R/R, and Drawdown metrics. **Enable perfect historical reproduction of any strategy/signal/meeting conclusion for stable evaluation and review.**
 
-**Acceptance Criteria:**
+**Why Priority:** This directly addresses the core pain point—"lots of discussion, unclear direction, afraid to refactor"—by providing a stable "trial-and-error channel" for strategy validation.
+
+**Implementation Plan (Three Stages):**
+
+#### Stage A: M3 Backtest V0 Foundation (Current Focus)
+**Objective:** Any strategy/signal/meeting conclusion can be stably reproduced and evaluated on offline historical data.
+
+**A1. Minimal Complete Backtest Report**
+- **Trade-level metrics:**
+  - Entry/exit time, quantity, fees, slippage, PnL, R-multiple per trade
+- **Portfolio-level metrics:**
+  - Equity curve (per bar)
+  - Max drawdown / MDD duration
+  - Win rate / avg win / avg loss / profit factor
+  - Exposure (time occupancy), turnover
+- **Reproducibility metadata:**
+  - Data hash (version of candles/news)
+  - Strategy config (parameter snapshot)
+  - Engine version (git commit)
+
+**A2. Visualization (Minimal but Usable)**
+Three essential charts for 90% of decision-making:
+- Equity curve + drawdown area
+- Trades on price (entry/exit markers)
+- PnL distribution (histogram or box plot)
+
+**Output format:**
+- `reports/{run_id}.json`
+- `reports/{run_id}.png` (or multiple charts)
+
+**A3. Backtest Accuracy Validation (Critical)**
+Three validation tests:
+- **Matching consistency test:** Given fixed K-line sequence + fixed order sequence, matching results must be deterministic.
+- **PnL and fee reconciliation:** Manually construct 2-3 trades, calculated results must match exactly.
+- **Backtest reproducibility:** Same `run_id` (same data hash + config) repeated runs produce bit-identical output (at least consistent metrics).
+
+**Stage A Acceptance:** Can run any strategy config to produce "3 charts + JSON report + reproducible run_id".
+
+#### Stage B: Validate/Align M1 (Unify "Offline/Live Semantics")
+**Objective:** VirtualExchange and HyperliquidExchange have consistent behavioral semantics, enabling seamless strategy switching between "backtest → paper/live trading".
+
+**B1. Define Exchange Contract (Text + Tests)**
+Create `exchange_contract.md` documenting:
+- Order state machine (NEW → PARTIAL → FILLED → CANCELED ...)
+- Stop/TP/SL trigger basis (last? mark? index?)
+- Fee model (maker/taker)
+- Slippage model (how to simulate in virtual?)
+- Time granularity principles (conservative/aggressive assumptions for 1m OHLC matching)
+
+**B2. Align Both Engines with Synthetic Scenarios**
+Create 10 scenarios, e.g.:
+- Can limit orders fill in trending one-way markets?
+- Will stops slip through gaps/jumps?
+- Priority of multiple triggers in same bar
+- FIFO & reduceOnly behavior
+
+Run VirtualExchange and Hyperliquid (sandbox/mock) through same scenarios, compare event logs for consistency.
+
+**Stage B Acceptance:** Guarantee "same strategy has consistent semantics in backtest vs paper/live trading", differences are explainable and configurable.
+
+#### Stage C: M4 Meeting Lab V0 (Minimal Viable Lab)
+**Objective:** Begin rolling discussion + interruptible + multi-model workflow, leveraging Stage A/B benefits for reviewable and calibratable conclusions.
+
+**C1. Information Layer Memo Generator (Non-interruptible)**
+- **Input:** Current market snapshot (price/volatility/positions/recent news top-k) + historical snapshot (last memo/decision)
+- **Output:** `memo/{t}.json` (facts/signals/unknowns)
+- Each agent outputs memo fragments, orchestrator merges and deduplicates.
+
+**C2. Discussion Layer Adversarial System (Interruptible)**
+- **Minimal implementation:** 3 roles (MA, LTA, RM), CTO responsible for convergence
+- Interrupt budget + interrupt types (Clarify / Counterevidence / Reframe / Veto-to-Revise)
+
+**C3. Review Loop (Immediately Connect to M3)**
+Each discussion outputs:
+- `decision/{t}.json`: Conclusion (main path/backup path), confidence, trigger conditions, corresponding strategy config id (if any)
+- After future window (e.g., 3d/7d/30d), automatically run backtest comparison, write outcome back.
+
+**Stage C Acceptance:** Clear chain visible: Event trigger → memo → debate → decision → backtest/live outcome → review weight update.
+
+**Original Acceptance Criteria (Baseline):**
 - **Inputs:** Symbol, Timeframe, Range, Strategy Config (Entry/SL/TP logic).
 - **Logic:** Reuses M1 matching logic for simulation accuracy.
 - **Execution:** Checks logic per K-line (Entry condition? SL hit? TP hit?).
@@ -87,9 +166,24 @@ AutoCryptoTrader is a multi-service, GPT-powered quantitative assistant designed
 - **Reproducibility:** Same data + same parameters = identical result.
 
 ### 🧪 M4: Meeting Lab V0 (Adversarial Agent Experiment)
-**Pipeline:** `Historical Snapshot` → `Meeting Lab (Debate)` → `Trade Ideas` → `Backtest V0`
+**Pipeline:** `Historical Snapshot` → `Meeting Lab (Debate)` → `Trade Ideas` → `Backtest V0` → `Review Loop`
 
-**Goal:** Experiment with "Adversarial Agent" workflows (e.g., "Debate Intensity") using historical data to optimize decision quality without production risk.
+**Goal:** Experiment with "Adversarial Agent" workflows (e.g., "Debate Intensity") using historical data to optimize decision quality without production risk. **Enable rolling discussion with interruptible multi-model debates, connected to M3 for automatic outcome review.**
+
+**Implementation Plan (See M3 Stage C):**
+
+**C1. Information Layer Memo Generator (Non-interruptible)**
+- **Input:** Current market snapshot (price/volatility/positions/recent news top-k) + historical snapshot (last memo/decision)
+- **Output:** `memo/{t}.json` (facts/signals/unknowns)
+- Each agent outputs memo fragments; orchestrator merges and deduplicates.
+
+**C2. Discussion Layer Adversarial System (Interruptible)**
+- **Minimal implementation:** 3 roles (MA, LTA, RM), CTO responsible for convergence
+- Interrupt budget + interrupt types (Clarify / Counterevidence / Reframe / Veto-to-Revise)
+
+**C3. Review Loop (Immediately Connect to M3)**
+- Each discussion outputs `decision/{t}.json`: Conclusion (main path/backup path), confidence, trigger conditions, corresponding strategy config id (if any)
+- After future window (e.g., 3d/7d/30d), automatically run backtest comparison, write outcome back.
 
 **Acceptance Criteria:**
 - **Input:** Fixed context window (Price + News) from a specific historical point.
@@ -97,6 +191,7 @@ AutoCryptoTrader is a multi-service, GPT-powered quantitative assistant designed
 - **Output:** JSON Schema: `Action` (Buy/Sell/Hold), `Entry`, `SL`, `TP`, `Confidence Score`.
 - **Validation:** Run simulation over a historical week -> Feed decisions to Backtest V0 -> Generate PnL report.
 - **Isolation:** Runs offline; no interaction with production Redis or Orders.
+- **Review Chain:** Clear chain visible: Event trigger → memo → debate → decision → backtest/live outcome → review weight update.
 
 ---
 

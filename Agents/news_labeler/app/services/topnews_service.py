@@ -38,10 +38,15 @@ def _format_age(now: datetime, dt: datetime) -> str:
     years = days // 365
     return f"{years} year ago" if years == 1 else f"{years} years ago"
 
-def get_top_news(limit: int, period: Optional[str]) -> List[NewsItem]:
+def get_top_news(
+    limit: int, 
+    period: Optional[str],
+    before_timestamp: Optional[float] = None  # 回测模式：只返回该时间之前的新闻
+) -> List[NewsItem]:
     """
     查询 Top 新闻：
       - period: day|week|month -> 只取该时间窗内的数据
+      - before_timestamp: 回测模式，只返回该时间戳之前的新闻
       - 总是：返回前重算分数并做一次懒清理
     """
     r = new_redis()
@@ -55,7 +60,12 @@ def get_top_news(limit: int, period: Optional[str]) -> List[NewsItem]:
 
     members = r.zrevrange(zkey, 0, -1, withscores=True)
 
-    now = datetime.now(timezone.utc)
+    # 确定"现在"时间：回测模式使用before_timestamp，否则使用当前时间
+    if before_timestamp:
+        now = datetime.fromtimestamp(before_timestamp, tz=timezone.utc)
+    else:
+        now = datetime.now(timezone.utc)
+    
     threshold = None
     if window_hours is not None:
         threshold = now - timedelta(hours=window_hours)
@@ -78,10 +88,14 @@ def get_top_news(limit: int, period: Optional[str]) -> List[NewsItem]:
         ts = _d(b"ts")
         dt = parse_ts(ts)  # 期待返回 datetime 或 None
 
-        # 过滤窗口外
+        # 过滤窗口外和时间点之后
         dtu = None
         if dt:
             dtu = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            # 回测模式：只返回before_timestamp之前的新闻
+            if before_timestamp and dtu.timestamp() > before_timestamp:
+                continue
+            # 窗口过滤
             if threshold and dtu < threshold:
                 continue
 

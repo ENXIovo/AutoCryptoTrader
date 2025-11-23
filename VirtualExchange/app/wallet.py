@@ -4,9 +4,12 @@ Wallet Management - 单职责：简单钱包管理
 统一使用UTC时区
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 from app.models import VirtualOrder, VirtualPosition, VirtualTrade
 from app.utils.time_utils import utc_timestamp
+
+if TYPE_CHECKING:
+    from app.models import OHLC
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +69,7 @@ class Wallet:
             return False
         
         if order.type == "buy":
-            # 买单：立即扣款
+            # 买单：立即扣款（注意：实际成交时还会扣除手续费）
             cost = order.volume * (order.price or current_price)
             self.balance -= cost
             logger.info(f"[Wallet] Deducted ${cost:.2f} for buy order {order.txid}, balance: ${self.balance:.2f}")
@@ -95,7 +98,14 @@ class Wallet:
                 self.balance += cost
                 logger.info(f"[Wallet] Refunded ${cost:.2f} for partially filled canceled buy order {order.txid}, balance: ${self.balance:.2f}")
     
-    def fill_order(self, order: VirtualOrder, fill_price: float, fill_volume: float) -> VirtualTrade:
+    def fill_order(
+        self, 
+        order: VirtualOrder, 
+        fill_price: float, 
+        fill_volume: float,
+        candle: Optional["OHLC"] = None,
+        fee_rate: float = 0.0
+    ) -> VirtualTrade:
         """
         订单成交时更新余额和持仓
         
@@ -103,10 +113,28 @@ class Wallet:
             order: 订单
             fill_price: 成交价格
             fill_volume: 成交数量
+            candle: K线数据（用于slippage计算）
+            fee_rate: 手续费率
             
         Returns:
             VirtualTrade: 成交记录
         """
+        # 计算手续费
+        trade_cost = fill_volume * fill_price
+        fee = trade_cost * fee_rate
+        
+        # 计算滑点（A1简化模型）
+        slippage = 0.0
+        bar_open = None
+        bar_close = None
+        if candle:
+            bar_open = candle.open
+            bar_close = candle.close
+            if order.ordertype == "market":
+                # 市价单：fill_price - bar_close
+                slippage = fill_price - bar_close
+            # 限价单：slippage = 0（按限价成交）
+        
         trade = VirtualTrade(
             txid=f"trade_{int(utc_timestamp() * 1000)}_{len(self.trades)}",
             order_txid=order.txid,
@@ -114,8 +142,14 @@ class Wallet:
             type=order.type,
             volume=fill_volume,
             price=fill_price,
-            cost=fill_volume * fill_price,
-            timestamp=utc_timestamp()
+            cost=trade_cost,
+            timestamp=utc_timestamp(),
+            fee=fee,
+            slippage=slippage,
+            order_type=order.ordertype,
+            limit_price=order.price,
+            bar_open=bar_open,
+            bar_close=bar_close
         )
         
         self.trades.append(trade)
@@ -147,14 +181,19 @@ class Wallet:
             if new_size != 0:
                 position.avg_entry_price = (old_size * old_avg - fill_volume * fill_price) / new_size
             position.size = new_size
-            # 卖单成交：增加余额
-            self.balance += fill_volume * fill_price
-            logger.info(f"[Wallet] Added ${fill_volume * fill_price:.2f} from sell order {order.txid}, balance: ${self.balance:.2f}")
+            # 卖单成交：增加余额（扣除手续费）
+            proceeds = fill_volume * fill_price - fee
+            self.balance += proceeds
+            logger.info(f"[Wallet] Added ${proceeds:.2f} from sell order {order.txid} (fee: ${fee:.2f}), balance: ${self.balance:.2f}")
         
         position.last_price = fill_price
         position.unrealized_pnl = (fill_price - position.avg_entry_price) * position.size
         
-        logger.info(f"[Wallet] Order {order.txid} filled: {fill_volume} @ {fill_price}, position {order.pair}: {position.size:.4f} @ {position.avg_entry_price:.2f}")
+        # 买单：扣除手续费（下单时已扣款，这里再扣手续费）
+        if order.type == "buy":
+            self.balance -= fee
+        
+        logger.info(f"[Wallet] Order {order.txid} filled: {fill_volume} @ {fill_price} (fee: ${fee:.2f}, slip: ${slippage:.4f}), position {order.pair}: {position.size:.4f} @ {position.avg_entry_price:.2f}")
         
         return trade
     

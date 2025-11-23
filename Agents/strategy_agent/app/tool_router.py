@@ -14,24 +14,31 @@ class ExchangeClient:
 
 # 数据采集客户端
 class DataClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, backtest_timestamp: Optional[float] = None):
         self.base_url = base_url.rstrip("/")
+        self.backtest_timestamp = backtest_timestamp  # 回测模式：历史时间戳
 
     def getKlineIndicators(self, symbol: str) -> dict:
-        resp = requests.get(f"{self.base_url}/gpt-latest/{symbol}", timeout=10)
+        params = {}
+        if self.backtest_timestamp:
+            params["timestamp"] = self.backtest_timestamp
+        resp = requests.get(f"{self.base_url}/gpt-latest/{symbol}", params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
 
 # 新闻客户端（新版：/top-news）
 class NewsClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, backtest_timestamp: Optional[float] = None):
         self.base_url = base_url.rstrip("/")
+        self.backtest_timestamp = backtest_timestamp  # 回测模式：历史时间戳
 
     # 保留原始接口，便于调试或后续扩展
     def getTopNewsRaw(self, limit: int, period: Optional[str] = None) -> list[dict]:
         params = {"limit": limit}
         if period is not None:
             params["period"] = period  # "day" | "week" | "month"
+        if self.backtest_timestamp:
+            params["before_timestamp"] = self.backtest_timestamp
         resp = requests.get(f"{self.base_url}/top-news", params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()

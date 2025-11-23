@@ -5,7 +5,7 @@ FastAPI Application - 单职责：API层
 """
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from app.utils.time_utils import utc_timestamp, parse_utc_datetime, ensure_utc
 
 from fastapi import FastAPI, HTTPException
@@ -251,46 +251,114 @@ async def get_info(req: Dict[str, Any]) -> Dict[str, Any]:
 # ========== 数据Mock接口（Mock DataCollector） ==========
 
 @app.get("/gpt-latest/{symbol}")
-async def get_gpt_data(symbol: str) -> Dict[str, Any]:
+async def get_gpt_data(
+    symbol: str,
+    timestamp: Optional[float] = None  # 回测模式：传入历史时间戳
+) -> Dict[str, Any]:
     """
     Mock DataCollector的/gpt-latest/{symbol}接口
-    根据当前回测时间点返回历史数据
+    根据当前回测时间点返回历史数据（支持多时间框架：15m、4h等）
+    
+    Args:
+        symbol: 交易对
+        timestamp: 可选，历史时间戳（Unix秒）。如果提供，返回该时间点的历史数据
     """
     runner = get_runner()
-    current_price = runner.get_current_price(symbol) or 0.0
     
-    # 简化：返回基本结构（实际应该从K线数据计算指标）
-    return {
-        "symbol": symbol,
-        "common_info": {
-            "ticker": {
-                "last_price": current_price,
-                "best_ask_price": current_price * 1.0001,  # 简化
-                "best_bid_price": current_price * 0.9999,  # 简化
-                "volume_24h": 0.0,
-                "high_24h": current_price * 1.01,  # 简化
-                "low_24h": current_price * 0.99  # 简化
-            },
-            "order_book": {
-                "top_ask_price": current_price * 1.0001,
-                "top_ask_volume": 0.0,
-                "top_bid_price": current_price * 0.9999,
-                "top_bid_volume": 0.0,
-                "total_bid_volume": 0.0,
-                "total_ask_volume": 0.0,
-                "bid_ask_volume_ratio": 1.0,
-                "spread": current_price * 0.0002
-            },
-            "recent_trades": {
-                "recent_buy_count": 0,
-                "recent_sell_count": 0,
-                "total_buy_volume_trades": 0.0,
-                "total_sell_volume_trades": 0.0,
-                "buy_sell_volume_ratio": 1.0
-            }
-        },
-        "intervals_data": {
-            "1": {  # 1分钟数据
+    # 确定使用的时间点：优先使用timestamp参数，其次使用runner的当前回测时间
+    target_time = None
+    if timestamp:
+        target_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    elif runner.get_current_backtest_time():
+        target_time = runner.get_current_backtest_time()
+    
+    # 如果提供了时间点，使用历史数据；否则使用当前回测时间点的价格
+    if target_time:
+        # 回测模式：从历史数据加载
+        from app.data_loader import DataLoader
+        from app.config import settings
+        
+        data_loader = DataLoader(settings.DATA_STORE_PATH)
+        
+        # 加载多个时间框架的数据（15m、4h等）
+        intervals_data = {}
+        timeframes = ["15m", "4h", "1d"]  # Strategy Agent需要的timeframes
+        
+        for tf in timeframes:
+            # 加载该时间点之前的数据（用于计算指标）
+            # 需要足够的历史数据来计算指标（例如RSI需要14根K线）
+            lookback_hours = {"15m": 24, "4h": 7*24, "1d": 30*24}.get(tf, 24)
+            start_time = target_time - timedelta(hours=lookback_hours)
+            
+            candles = data_loader.load_candles(symbol, start_time, target_time, tf)
+            if candles:
+                # 取最后一根K线（最接近target_time的）
+                latest_candle = candles[-1]
+                current_price = latest_candle.close
+                
+                # 使用与DataCollector相同的指标计算逻辑（确保一致性）
+                from app.indicators import (
+                    calculate_ema, calculate_sma, calculate_rsi,
+                    calculate_macd, calculate_bollinger_bands, calculate_atr
+                )
+                
+                # 提取价格序列
+                closes = [c.close for c in candles]
+                highs = [c.high for c in candles]
+                lows = [c.low for c in candles]
+                
+                # 计算指标（与DataCollector完全一致）
+                ema_9 = calculate_ema(closes, period=9) or current_price
+                sma_14 = calculate_sma(closes, period=14) or current_price
+                rsi_14 = calculate_rsi(closes, period=14) or 50.0
+                macd_line, macd_signal, macd_hist = calculate_macd(closes)
+                boll_upper, boll_middle, boll_lower = calculate_bollinger_bands(closes)
+                atr_14 = calculate_atr(highs, lows, closes, period=14)
+                
+                # 处理None值（如果计算失败，使用默认值）
+                macd_line = macd_line if macd_line is not None else 0.0
+                macd_signal = macd_signal if macd_signal is not None else 0.0
+                macd_hist = macd_hist if macd_hist is not None else 0.0
+                boll_upper = boll_upper if boll_upper is not None else current_price * 1.02
+                boll_middle = boll_middle if boll_middle is not None else current_price
+                boll_lower = boll_lower if boll_lower is not None else current_price * 0.98
+                atr_14 = atr_14 if atr_14 is not None else current_price * 0.01
+                
+                # 构建interval数据（与DataCollector的格式完全一致）
+                # 将timeframe转换为数字（分钟数）：15m -> 15, 4h -> 240, 1d -> 1440
+                tf_to_minutes = {
+                    "15m": 15,
+                    "4h": 240,
+                    "1d": 1440
+                }
+                interval_minutes = tf_to_minutes.get(tf, 15)
+                interval_key = str(interval_minutes)  # intervals_data的键是字符串数字
+                
+                intervals_data[interval_key] = {
+                    "timeframe": interval_minutes,  # 与DataCollector一致：数字，不是字符串
+                    "open": latest_candle.open,
+                    "high": latest_candle.high,
+                    "low": latest_candle.low,
+                    "close": latest_candle.close,
+                    "volume": latest_candle.volume,
+                    "ema_9": ema_9,
+                    "sma_14": sma_14,
+                    "rsi_14": rsi_14,
+                    "macd_line": macd_line,
+                    "macd_signal": macd_signal,
+                    "macd_hist": macd_hist,
+                    "bollinger_upper": boll_upper,
+                    "bollinger_middle": boll_middle,
+                    "bollinger_lower": boll_lower,
+                    "atr_14": atr_14
+                }
+        
+        current_price = intervals_data.get("15", {}).get("close", 0.0) if intervals_data else 0.0
+    else:
+        # 实时模式：使用当前回测时间点的价格
+        current_price = runner.get_current_price(symbol) or 0.0
+        intervals_data = {
+            "1": {
                 "ohlc": {
                     "open": current_price,
                     "high": current_price * 1.01,
@@ -312,10 +380,41 @@ async def get_gpt_data(symbol: str) -> Dict[str, Any]:
                 }
             }
         }
+    
+    return {
+        "symbol": symbol,
+        "common_info": {
+            "ticker": {
+                "last_price": current_price,
+                "best_ask_price": current_price * 1.0001,
+                "best_bid_price": current_price * 0.9999,
+                "volume_24h": 0.0,
+                "high_24h": current_price * 1.01,
+                "low_24h": current_price * 0.99
+            },
+            "order_book": {
+                "top_ask_price": current_price * 1.0001,
+                "top_ask_volume": 0.0,
+                "top_bid_price": current_price * 0.9999,
+                "top_bid_volume": 0.0,
+                "total_bid_volume": 0.0,
+                "total_ask_volume": 0.0,
+                "bid_ask_volume_ratio": 1.0,
+                "spread": current_price * 0.0002
+            },
+            "recent_trades": {
+                "recent_buy_count": 0,
+                "recent_sell_count": 0,
+                "total_buy_volume_trades": 0.0,
+                "total_sell_volume_trades": 0.0,
+                "buy_sell_volume_ratio": 1.0
+            }
+        },
+        "intervals_data": intervals_data
     }
 
 
-# ========== 回测接口（可选，用于手动触发） ==========
+# ========== 回测接口 ==========
 
 @app.post("/backtest/run")
 async def run_backtest(req: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,4 +458,53 @@ async def run_backtest(req: Dict[str, Any]) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Backtest failed: {e}")
+        return {"status": "err", "response": str(e)}
+
+
+@app.post("/backtest/orchestrate")
+async def orchestrate_backtest(req: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    完整回测编排（整合 Strategy Agent）
+    
+    Payload:
+    {
+        "symbol": "BTCUSDT",
+        "start_time": "2024-01-01T00:00:00Z",
+        "end_time": "2024-01-07T23:59:59Z",
+        "meeting_interval_hours": 4,  # 可选，默认4小时
+        "strategy_agent_url": "http://strategy-agent:8080"  # 可选，如果提供则调用Agent
+    }
+    """
+    try:
+        symbol = req.get("symbol", "BTCUSDT")
+        start_time_str = req.get("start_time", "2024-01-01T00:00:00Z")
+        end_time_str = req.get("end_time", "2024-01-07T23:59:59Z")
+        start_time = parse_utc_datetime(start_time_str) or ensure_utc(datetime.fromisoformat(start_time_str.replace("Z", "+00:00")))
+        end_time = parse_utc_datetime(end_time_str) or ensure_utc(datetime.fromisoformat(end_time_str.replace("Z", "+00:00")))
+        
+        meeting_interval_hours = req.get("meeting_interval_hours", 4)
+        meeting_interval = timedelta(hours=meeting_interval_hours)
+        
+        strategy_agent_url = req.get("strategy_agent_url")  # 可选
+        
+        # 创建编排器
+        from app.backtest_orchestrator import BacktestOrchestrator
+        orchestrator = BacktestOrchestrator()
+        
+        # 执行回测
+        report = await orchestrator.run(
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+            meeting_interval=meeting_interval,
+            strategy_agent_url=strategy_agent_url
+        )
+        
+        return {
+            "status": "ok",
+            "response": report.model_dump()
+        }
+        
+    except Exception as e:
+        logger.error(f"Orchestrated backtest failed: {e}")
         return {"status": "err", "response": str(e)}

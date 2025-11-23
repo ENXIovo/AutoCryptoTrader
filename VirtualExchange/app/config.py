@@ -30,6 +30,13 @@ class Settings(BaseSettings):
         env="BACKTEST_TIME_SCALE",
         description="Time acceleration factor (1.0 = real-time, 60.0 = 60x speed)"
     )
+    
+    # 费用配置（A1简化：统一费率）
+    FEE_RATE: float = Field(
+        default=0.0,
+        env="FEE_RATE",
+        description="Trading fee rate (0.001 = 0.1%, 0.0 = no fees)"
+    )
 
 
 settings = Settings()

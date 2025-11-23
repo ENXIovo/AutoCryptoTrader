@@ -37,9 +37,9 @@ class DataLoader:
     def load_candles(
         self,
         symbol: str,
-        timeframe: str = "1m",
         start_time: datetime,
-        end_time: datetime
+        end_time: datetime,
+        timeframe: str = "1m"
     ) -> List[OHLC]:
         """
         加载历史K线数据
@@ -110,9 +110,113 @@ class DataLoader:
         
         # 按时间排序
         candles.sort(key=lambda x: x.timestamp)
+        
+        # 检测数据缺失（warn策略）
+        if candles:
+            self._detect_missing_candles(candles, timeframe, start_time, end_time)
+        
         logger.info(f"[DataLoader] Total loaded: {len(candles)} candles for {symbol} {timeframe}")
         
         return candles
+    
+    def _parse_timeframe_seconds(self, timeframe: str) -> int:
+        """解析timeframe为秒数"""
+        try:
+            if timeframe.endswith('m'):
+                return int(timeframe[:-1]) * 60
+            elif timeframe.endswith('h'):
+                return int(timeframe[:-1]) * 3600
+            elif timeframe.endswith('d'):
+                return int(timeframe[:-1]) * 86400
+            else:
+                return 60  # 默认1分钟
+        except (ValueError, AttributeError):
+            return 60
+    
+    def _detect_missing_candles(self, candles: List[OHLC], timeframe: str, start_time: datetime, end_time: datetime) -> None:
+        """
+        检测缺失的K线数据（warn策略：记录警告但继续）
+        
+        Args:
+            candles: 已加载的K线列表（已排序）
+            timeframe: 时间周期
+            start_time: 开始时间
+            end_time: 结束时间
+        """
+        if not candles:
+            return
+        
+        interval_seconds = self._parse_timeframe_seconds(timeframe)
+        start_ts = start_time.timestamp()
+        end_ts = end_time.timestamp()
+        
+        missing_gaps = []
+        prev_ts = None
+        
+        for candle in candles:
+            current_ts = candle.timestamp
+            
+            # 跳过范围外的数据
+            if current_ts < start_ts or current_ts > end_ts:
+                continue
+            
+            if prev_ts is not None:
+                gap = current_ts - prev_ts
+                # 如果gap超过1.5倍间隔，认为有缺失（允许0.5倍容差）
+                if gap > interval_seconds * 1.5:
+                    # 缺失数量 = gap内的K线数 - 1（减去当前这根）
+                    missing_count = max(0, int(gap / interval_seconds) - 1)
+                    if missing_count > 0:
+                        gap_start = datetime.fromtimestamp(prev_ts + interval_seconds, tz=timezone.utc)
+                        gap_end = datetime.fromtimestamp(current_ts - interval_seconds, tz=timezone.utc)
+                        missing_gaps.append({
+                            "start": gap_start,
+                            "end": gap_end,
+                            "missing_count": missing_count,
+                            "gap_seconds": gap
+                        })
+            
+            prev_ts = current_ts
+        
+        # 检查开头和结尾的缺失
+        first_ts = candles[0].timestamp
+        if first_ts > start_ts + interval_seconds * 1.5:
+            missing_count = max(0, int((first_ts - start_ts) / interval_seconds) - 1)
+            if missing_count > 0:
+                gap_start = datetime.fromtimestamp(start_ts, tz=timezone.utc)
+                gap_end = datetime.fromtimestamp(first_ts - interval_seconds, tz=timezone.utc)
+                missing_gaps.insert(0, {
+                    "start": gap_start,
+                    "end": gap_end,
+                    "missing_count": missing_count,
+                    "gap_seconds": first_ts - start_ts
+                })
+        
+        last_ts = candles[-1].timestamp
+        if last_ts < end_ts - interval_seconds * 1.5:
+            missing_count = max(0, int((end_ts - last_ts) / interval_seconds) - 1)
+            if missing_count > 0:
+                gap_start = datetime.fromtimestamp(last_ts + interval_seconds, tz=timezone.utc)
+                gap_end = datetime.fromtimestamp(end_ts, tz=timezone.utc)
+                missing_gaps.append({
+                    "start": gap_start,
+                    "end": gap_end,
+                    "missing_count": missing_count,
+                    "gap_seconds": end_ts - last_ts
+                })
+        
+        # 记录警告
+        if missing_gaps:
+            total_missing = sum(g["missing_count"] for g in missing_gaps)
+            logger.warning(
+                f"[DataLoader] Detected {len(missing_gaps)} missing candle gaps "
+                f"(total {total_missing} missing candles):"
+            )
+            for gap in missing_gaps:
+                logger.warning(
+                    f"  Missing {gap['missing_count']} candles from {gap['start']} to {gap['end']} "
+                    f"(gap: {gap['gap_seconds']:.0f}s)"
+                )
     
     def get_latest_price(self, symbol: str, timestamp: float) -> Optional[float]:
         """
