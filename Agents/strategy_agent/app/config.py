@@ -1,22 +1,19 @@
 # config.py
 
 from pydantic import Field
-from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import json
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     # ─────────── 外部服务地址 ───────────
     gpt_proxy_url: str = Field(..., env="GPT_PROXY_URL")
     news_service_url: str = Field(..., env="NEWS_SERVICE_URL")
-    kraken_service_url: str = Field(..., env="KRAKEN_SERVICE_URL")
     data_service_url: str = Field(..., env="DATA_SERVICE_URL")
-    # KrakenTradingSpot API（用于 kraken-filter 与下单流测试端点）
+    # Virtual Exchange API (Hyperliquid-Lite)
     trading_url: str = Field(..., env="TRADING_URL")
     redis_url: str = Field(..., env="REDIS_URL")
-    # 向 KrakenTradingSpot 推送指令的 Redis Stream Key
-    trade_actions_stream_key: str = Field("trading:actions", env="TRADE_ACTIONS_STREAM_KEY")
 
     # ─────────── Celery & 调度 ───────────
     celery_broker_url: str = Field("redis://redis-server:6379/0",
@@ -36,11 +33,6 @@ class Settings(BaseSettings):
     analysis_results_stream_maxlen: int = Field(1000, env="ANALYSIS_RESULTS_STREAM_MAXLEN")
     
     trade_universe_json: str | None = Field('["BTC"]', env="TRADE_UNIVERSE_JSON")
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
 
 settings = Settings()
 
@@ -99,7 +91,7 @@ Tasks:
    • Trigger level(s) to validate,
    • Invalidation level,
    • Preferred watch zone,
-   • A single numeric candidate set (for RM’s RRR check): entry, stop, TP1 (and optional TP2).
+   • A single numeric candidate set (for RM's RRR check): entry, stop, TP1 (and optional TP2).
 Output bullets should include explicit numbers for entry/stop/TP1 (TP2 optional).
 
 Output:
@@ -123,16 +115,16 @@ Non-negotiables:
 • Do NOT propose new buys.
 • Flag and recommend reducing any single-asset position that exceeds 50% of total equity.
 • Maintain a cash buffer of at least 10% of equity. If the buffer is below 10%, propose reductions (or order cancellations) to restore it.
-• Identifiers: Use userref-only when referencing orders or groups. Do NOT use order_id or trade_id.
+• Identifiers: Use oid (order ID) when referencing orders. M1.5 uses oid instead of userref.
 
 Inputs:
-• Call `getAccountInfo()` ONCE to fetch the full kraken-filter snapshot (balances, trade balance, open orders with userref, trade history). Use this snapshot to locate existing positions and open orders per symbol.
+• Call `getAccountInfo()` ONCE to fetch the clearinghouse state (balances, open orders with oid).
 
 Tasks (strict order):
- a) Protect: ensure every position has an effective stop (recommend userref-based amends if needed).
+ a) Protect: ensure every position has an effective stop (recommend oid-based cancels if needed).
  b) De-risk: reduce any single-asset exposure above 50% equity; then restore ≥10% cash buffer if below target.
- c) Free capital: list which open orders to cancel (by userref) and estimate USD freed; prioritize stale/far buy orders (age ≥72h or distance >5%).
- d) Dynamic Order Adjustments: Cross-check the latest Lead Technical Analyst reports per held asset and propose specific stop/TP amendments (reference userref).
+ c) Free capital: list which open orders to cancel (by oid) and estimate USD freed; prioritize stale/far buy orders.
+ d) Dynamic Order Adjustments: Cross-check the latest Lead Technical Analyst reports per held asset and propose specific adjustments.
 
 Begin with `--- Position Manager Brief ---`. Bullets only.
 """,
@@ -180,7 +172,7 @@ Output:
     "name": "Chief Trading Officer",
     "deployment_name": "gpt-5-mini",
     "enabled": True,
-    "tools": ["cancelOrder", "amendOrder", "addOrder", "rescheduleMeeting"],
+    "tools": ["cancelOrder", "placeOrder", "getAccountInfo", "rescheduleMeeting"],
     "prompt": """
 You are the Chief Trading Officer (CTO). Your responsibility is to make the final, actionable decisions for the portfolio.
 
@@ -199,26 +191,19 @@ You now hold the trading tools and must both decide and EXECUTE. You MAY optiona
 If now is not a good time to trade, you can arrange another meeting at a time you believe may be an inflection point to re-analyze again.
 
 Execution rules and ordering (hard requirements):
-- Always sequence actions as: 1) cancels, 2) amends, 3) adds.
-- Use ONLY userref as the identifier for cancels and amends. Do NOT expose or reference order_id/trade_id.
-- Call the tools directly to execute your plan: `cancelOrder({ userref })` → `amendOrder({ userref, ... })` → `addOrder({ ... , post_only?: true })`.
-- Amendments may ONLY change prices/triggers (entry limit price when still unfilled, stop-loss price, TP prices). Quantity/position_size cannot be amended. To change size, first cancel (by userref) and then submit a new add with the desired size.
-- Entry price can be amended only for unfilled entry limit orders. Stop-loss can be amended when the SL order exists; if not yet created, the ledger value will be used and the listener will sync the SL price on creation.
-- Strategy does not pre-place TP orders; TP1/TP2 are ledger-only prices. If a trade currently has only one TP, providing only TP2 will NOT auto-create a second TP (must provide a full replacement ladder if desired).
-- Preference: for limit-type entries, default to maker-only by setting post_only unless immediacy is explicitly required.
-- Limit order validation: for buys, do NOT place a limit above the current last_price; for sells, do NOT place a limit below the current last_price. Such orders will fail. Use the provided Live Ticker (last_price) snapshot.
+- Always sequence actions as: 1) cancels, 2) new orders.
+- Use oid (order ID) as the identifier for cancels. 
+- Call the tools directly to execute your plan: `cancelOrder({ coin, oid })` → `placeOrder({ coin, is_buy, sz, limit_px })`.
+- For limit orders, set limit_px. For market orders, set limit_px=0.
+- Check current prices via getAccountInfo or context before placing limit orders to avoid crossing the spread.
 
 Your plan must be structured in two parts:
-  1. **Portfolio Management Actions**: First, detail any required actions on existing positions or orders (e.g., "Cancel order XYZ to free up capital", "Amend ETH stop-loss to 4150"). If no actions are needed, state "No changes to existing positions."
+  1. **Portfolio Management Actions**: First, detail any required actions on existing positions or orders (e.g., "Cancel order XYZ to free up capital"). If no actions are needed, state "No changes to existing positions."
   2. **New Trade Execution Plan**: Second, review the ranked list of new trade ideas from the Risk Manager and decide which to approve. You can approve multiple trades, but ensure combined total risk does not exceed 3.0% of equity.
 
 Decision format for New Trades (Strictly one of the following):
-- **“DECISION: APPROVE X TRADE(S)”**: Followed by a sequentially numbered “Final Plan” for each approved trade, confirming asset, direction, entry, stop, TPs, and size.
-- **“DECISION: NO NEW TRADES”**: With precise reasons why no new opportunities are suitable at this time.
-
-Notes:
-- userref is system-generated and returned after each add; use it for any follow-up cancels and amends.
-- Prefer maker-only (post_only=true) for limit entries unless explicitly justified otherwise.
+- **"DECISION: APPROVE X TRADE(S)"**: Followed by a sequentially numbered "Final Plan" for each approved trade, confirming asset, direction, entry, stop, and size.
+- **"DECISION: NO NEW TRADES"**: With precise reasons why no new opportunities are suitable at this time.
 
 Start your entire report with `--- CTO Final Decision & Execution Plan ---`. Keep it tight and actionable.
 """

@@ -60,36 +60,6 @@ services:
       redis:
         condition: service_healthy
 
-  kraken_service:
-    build:
-      context: ./kraken_service
-      dockerfile: dockerfile
-    ports:
-      - "9000:8000"
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  celery-beat-kraken:
-    build:
-      context: ./kraken_service
-      dockerfile: Dockerfile
-    command: celery -A app.tasks beat --loglevel=info
-    depends_on:
-      redis:
-        condition: service_healthy
-  
-  kraken-worker:
-    build:
-      context: ./kraken_service
-      dockerfile: Dockerfile
-    command: celery -A app.tasks worker --loglevel=info --queues=kraken_queue
-    depends_on:
-      redis:
-        condition: service_healthy
-
   newscollector-web:
     build:
       context: ./crypto_news_collector

@@ -1,14 +1,14 @@
 import requests
 from typing import Optional
 
-# Kraken 客户端
-class KrakenClient:
+# 交易所客户端 (Hyperliquid-Lite / Virtual Exchange)
+class ExchangeClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
     def getAccountInfo(self) -> dict:
-        # kraken-filter now returns a full snapshot without parameters
-        resp = requests.get(f"{self.base_url}/kraken-filter", timeout=10)
+        # Calls POST /info with clearinghouseState
+        resp = requests.post(f"{self.base_url}/info", json={"type": "clearinghouseState"}, timeout=10)
         resp.raise_for_status()
         return resp.json()
 
