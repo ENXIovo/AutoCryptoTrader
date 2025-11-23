@@ -35,3 +35,9 @@ services:
       dockerfile: Dockerfile
     command: python -m app.label_worker
     restart: unless-stopped
+
+  alert-service:
+    build:
+      context: ./alert_service
+      dockerfile: Dockerfile
+    restart: unless-stopped

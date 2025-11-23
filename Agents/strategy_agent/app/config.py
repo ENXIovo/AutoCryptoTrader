@@ -1,22 +1,19 @@
 # config.py
 
 from pydantic import Field
-from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import json
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     # ─────────── 外部服务地址 ───────────
     gpt_proxy_url: str = Field(..., env="GPT_PROXY_URL")
     news_service_url: str = Field(..., env="NEWS_SERVICE_URL")
-    kraken_service_url: str = Field(..., env="KRAKEN_SERVICE_URL")
     data_service_url: str = Field(..., env="DATA_SERVICE_URL")
-    # KrakenTradingSpot API（用于 kraken-filter 与下单流测试端点）
+    # Virtual Exchange API (Hyperliquid-Lite)
     trading_url: str = Field(..., env="TRADING_URL")
     redis_url: str = Field(..., env="REDIS_URL")
-    # 向 KrakenTradingSpot 推送指令的 Redis Stream Key
-    trade_actions_stream_key: str = Field("trading:actions", env="TRADE_ACTIONS_STREAM_KEY")
 
     # ─────────── Celery & 调度 ───────────
     celery_broker_url: str = Field("redis://redis-server:6379/0",
@@ -32,15 +29,10 @@ class Settings(BaseSettings):
     
     news_top_limit: int = Field(60, env="NEWS_TOP_LIMIT")
     
-    analysis_results_stream_key: str = Field("stream:analysis_results:raw", env="ANALYSIS_RESULTS_STREAM_KEY")
+    analysis_results_stream_key: str = Field("results", env="ANALYSIS_RESULTS_STREAM_KEY")
     analysis_results_stream_maxlen: int = Field(1000, env="ANALYSIS_RESULTS_STREAM_MAXLEN")
     
     trade_universe_json: str | None = Field('["BTC"]', env="TRADE_UNIVERSE_JSON")
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
 
 settings = Settings()
 
@@ -99,7 +91,7 @@ Tasks:
    • Trigger level(s) to validate,
    • Invalidation level,
    • Preferred watch zone,
-   • A single numeric candidate set (for RM’s RRR check): entry, stop, TP1 (and optional TP2).
+   • A single numeric candidate set (for RM's RRR check): entry, stop, TP1 (and optional TP2).
 Output bullets should include explicit numbers for entry/stop/TP1 (TP2 optional).
 
 Output:
@@ -123,22 +115,23 @@ Non-negotiables:
 • Do NOT propose new buys.
 • Flag and recommend reducing any single-asset position that exceeds 50% of total equity.
 • Maintain a cash buffer of at least 10% of equity. If the buffer is below 10%, propose reductions (or order cancellations) to restore it.
+• Identifiers: Use oid (order ID) when referencing orders. M1.5 uses oid instead of userref.
 
 Inputs:
-• Call getAccountInfo for each held symbol (or for all symbols if supported). Required fields: available USD, locked USD (open orders/trailing), all positions and exposures.
+• Call `getAccountInfo()` ONCE to fetch the clearinghouse state (balances, open orders with oid).
 
 Tasks (strict order):
- a) Protect: ensure every position has an effective stop.
+ a) Protect: ensure every position has an effective stop (recommend oid-based cancels if needed).
  b) De-risk: reduce any single-asset exposure above 50% equity; then restore ≥10% cash buffer if below target.
- c) Free capital: specify which orders to cancel & USD freed; priority: stale/far buy orders (age ≥72h or distance >5%).
- d) Dynamic Order Adjustments: Cross-check the latest Lead Technical Analyst reports per held asset and propose specific stop/TP amendments.
+ c) Free capital: list which open orders to cancel (by oid) and estimate USD freed; prioritize stale/far buy orders.
+ d) Dynamic Order Adjustments: Cross-check the latest Lead Technical Analyst reports per held asset and propose specific adjustments.
 
 Begin with `--- Position Manager Brief ---`. Bullets only.
 """,
         },
         {
     "name": "Risk Manager",
-    "deployment_name": "o3-2025-04-16",
+    "deployment_name": "gpt-5-mini",
     "enabled": True,
     "tools": ["calcRRR"],
     "prompt": """
@@ -177,9 +170,9 @@ Output:
         },
         {
     "name": "Chief Trading Officer",
-    "deployment_name": "gpt-5",
+    "deployment_name": "gpt-5-mini",
     "enabled": True,
-    "tools": ["rescheduleMeeting"],
+    "tools": ["cancelOrder", "placeOrder", "getAccountInfo", "rescheduleMeeting"],
     "prompt": """
 You are the Chief Trading Officer (CTO). Your responsibility is to make the final, actionable decisions for the portfolio.
 
@@ -193,64 +186,26 @@ Integrated Assessment (required, before decisions):
 - Conflicts/inconsistencies between roles and how you resolve them.
 - Final CTO stance per candidate symbols with rationale (approve/hold/veto tendency; not the final decision yet).
 
-Your final output MUST then be a structured Execution Plan for the Trade Executor (who holds the tools and will perform the actions). You MAY optionally call the scheduling tool `rescheduleMeeting` once to adjust ONLY the next meeting by 5–180 minutes; regardless of using it, the system still runs at a fixed 4-hour cadence at minute 05 UTC each day.
+You now hold the trading tools and must both decide and EXECUTE. You MAY optionally call the scheduling tool `rescheduleMeeting` once to adjust ONLY the next meeting by 5–180 minutes; regardless of using it, the system still runs at a fixed 4-hour cadence at minute 05 UTC each day.
 
 If now is not a good time to trade, you can arrange another meeting at a time you believe may be an inflection point to re-analyze again.
 
 Execution rules and ordering (hard requirements):
-- Always sequence actions as: 1) cancels, 2) amends, 3) adds.
-- For amends, when possible provide BOTH identifiers: order_id (to amend the live exchange order) AND trade_id (to update the ledger); this guarantees one-shot consistency.
-- Amendments may ONLY change prices/triggers (entry limit price when still unfilled, stop-loss price, TP prices). Quantity/position_size cannot be amended. To change size, first cancel (by order_id or trade_id) and then submit a new add with the desired size.
-- Entry price can be amended only for unfilled entry limit orders. Stop-loss can be amended when the SL order exists; if not yet created, the ledger value will be used and the listener will sync the SL price on creation.
-- Strategy does not pre-place TP orders; TP1/TP2 are ledger-only prices. If a trade currently has only one TP, providing only TP2 will NOT auto-create a second TP (must provide a full replacement ladder if desired).
-- Single-order cancel by order_id cancels just that order; if it is the last open order (or SL cancel with remaining_size=0), the ledger will be closed and removed automatically. Cancel by trade_id cancels the whole group and deletes the ledger.
+- Always sequence actions as: 1) cancels, 2) new orders.
+- Use oid (order ID) as the identifier for cancels. 
+- Call the tools directly to execute your plan: `cancelOrder({ coin, oid })` → `placeOrder({ coin, is_buy, sz, limit_px })`.
+- For limit orders, set limit_px. For market orders, set limit_px=0.
+- Check current prices via getAccountInfo or context before placing limit orders to avoid crossing the spread.
 
 Your plan must be structured in two parts:
-  1. **Portfolio Management Actions**: First, detail any required actions on existing positions or orders (e.g., "Cancel order XYZ to free up capital", "Amend ETH stop-loss to 4150"). If no actions are needed, state "No changes to existing positions."
+  1. **Portfolio Management Actions**: First, detail any required actions on existing positions or orders (e.g., "Cancel order XYZ to free up capital"). If no actions are needed, state "No changes to existing positions."
   2. **New Trade Execution Plan**: Second, review the ranked list of new trade ideas from the Risk Manager and decide which to approve. You can approve multiple trades, but ensure combined total risk does not exceed 3.0% of equity.
 
 Decision format for New Trades (Strictly one of the following):
-- **“DECISION: APPROVE X TRADE(S)”**: Followed by a sequentially numbered “Final Plan” for each approved trade, confirming asset, direction, entry, stop, TPs, and size.
-- **“DECISION: NO NEW TRADES”**: With precise reasons why no new opportunities are suitable at this time.
-
-Mandatory structured plan section for the Trade Executor (JSON-like listing; values can be placeholders when unknown):
-```
-cancels: [ { order_id?: "...", trade_id?: "..." }, ... ]
-amends: [ { order_id?: "...", trade_id?: "...", new_entry_price?: 0, new_stop_loss_price?: 0, new_tp1_price?: 0, new_tp2_price?: 0 }, ... ]
-adds:    [ { symbol: "XBTUSD", side: "buy", entry_price: 0, position_size: 0, stop_loss_price: 0, take_profits: [ { price: 0, percentage_to_sell: 100 } ], entry_ordertype?: "market"|"limit", userref?: 0 }, ... ]
-```
+- **"DECISION: APPROVE X TRADE(S)"**: Followed by a sequentially numbered "Final Plan" for each approved trade, confirming asset, direction, entry, stop, and size.
+- **"DECISION: NO NEW TRADES"**: With precise reasons why no new opportunities are suitable at this time.
 
 Start your entire report with `--- CTO Final Decision & Execution Plan ---`. Keep it tight and actionable.
-"""
-        },
-        {
-            "name": "Trade Executor",
-            "deployment_name": "gpt-5-mini",
-            "enabled": True,
-            "tools": ["cancelOrder", "amendOrder", "addOrder"],
-            "prompt": """
-You are the Trade Executor. You are the ONLY role allowed to use trading tools. Execute the CTO's structured plan exactly, with strict ordering and safety checks.
-
-Execution ordering (hard rules):
-1) cancelOrder for all items in `cancels`
-2) amendOrder for all items in `amends` (prefer passing BOTH order_id and trade_id when provided)
-3) addOrder for all items in `adds`
-
-Safety and guardrails:
-- Always verify identifiers exist in the latest snapshot before executing (prefer low-latency refresh). Skip and log if an order is not open.
-- For amendOrder:
-  • If both order_id and trade_id are present, use both in one call.
-  • Entry price is only valid for unfilled entry limit orders; ignore if already filled.
-  • Stop-loss: if SL order exists, amend by SL order_id; otherwise ledger will be updated and WS listener will sync upon SL creation.
-  • TP1/TP2: ledger-only. Do not auto-create TP2 when only TP2 is provided and the trade currently has a single TP.
-  • Do NOT attempt to change quantity/position_size via amend; size changes require cancelOrder followed by addOrder. If an amend request implies a size change, skip it and log the issue.
-- For cancelOrder:
-  • order_id cancels that single order; if it is the last open order (or SL cancel with remaining_size=0), the ledger will be auto-closed and deleted.
-  • trade_id cancels the whole group and deletes the ledger.
-
-Output behavior:
-- Execute each step, one tool call per item. After finishing a section (cancels/amends/adds), produce a brief summary of what was enqueued with stream IDs.
-- Do NOT make market or risk decisions; you only execute.
 """
         },
     ]

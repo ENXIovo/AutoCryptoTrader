@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
@@ -10,33 +9,6 @@ from .utils.redis_utils import new_redis, compute_weight
 from .utils.time_utils import parse_ts  # ✅ 复用公共工具
 
 logger = logging.getLogger(__name__)
-
-
-def _norm(x: str) -> str:
-    return re.sub(r"\W+", "", (x or "").strip().lower())
-
-
-def _source_factor(source: str) -> float:
-    s = _norm(source)
-    for k, v in settings.source_factor_map.items():
-        if _norm(k) == s:
-            return float(v)
-    return 0.8
-
-
-def _category_factor(categories) -> float:
-    if not categories:
-        return 1.0
-    if isinstance(categories, str):
-        cats = [c.strip().lower() for c in categories.split(",") if c.strip()]
-    else:
-        cats = [str(c).strip().lower() for c in categories if str(c).strip()]
-    if not cats:
-        return 1.0
-    factors = [float(settings.category_factor_map.get(c, 1.0)) for c in cats]
-    up = max([f for f in factors if f >= 1.0], default=1.0)
-    down = min([f for f in factors if f < 1.0], default=1.0)
-    return up * down
 
 
 def recompute_scores(window_hours: Optional[int] = None) -> Dict[str, int]:
@@ -83,21 +55,9 @@ def recompute_scores(window_hours: Optional[int] = None) -> Dict[str, int]:
         except Exception:
             importance = 0.0
         durability = _d(b"durability") or "days"
-        source = _d(b"source") or ""
-        category_s = _d(b"category") or ""
-        label_version = (_d(b"label_version") or "").lower()
 
-        base = compute_weight(importance, durability, ts)
-        mult_src = _source_factor(source)
-
-        cats = [c.strip() for c in category_s.split(",") if c.strip()]
-        is_whale_like = ("whale_transaction" in [c.lower() for c in cats]) or label_version.startswith("whale")
-        if not settings.apply_category_for_whale and is_whale_like:
-            mult_cat = 1.0
-        else:
-            mult_cat = _category_factor(cats)
-
-        final = base * mult_src * mult_cat
+        # 只使用 GPT 的 importance + 时间衰减，不再应用 source/category 因子
+        final = compute_weight(importance, durability, ts)
         r.zadd(zkey, {member: final})
         try:
             r.hset(hkey, mapping={"weight": str(final)})

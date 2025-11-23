@@ -7,25 +7,25 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "name": "calcRRR",
         "description": "Pure-math RRR calculator. Inputs: entry, stop, tp1, tp2 (optional). Returns risk/reward and RRRs. No policy.",
         "parameters": {
-        "type": "object",
-        "properties": {
-            "cases": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                "entry": { "type": "number" },
-                "stop":  { "type": "number" },
-                "tp1":   { "type": "number" },
-                "tp2":   { "type": "number" }
-                },
-                "required": ["entry","stop","tp1"],
-                "additionalProperties": False
-            }
-            }
-        },
-        "required": ["cases"],
-        "additionalProperties": False
+            "type": "object",
+            "properties": {
+                "cases": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entry": { "type": "number" },
+                            "stop":  { "type": "number" },
+                            "tp1":   { "type": "number" },
+                            "tp2":   { "type": "number" }
+                        },
+                        "required": ["entry", "stop", "tp1"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["cases"],
+            "additionalProperties": False
         }
     },
     "getTopNews": {
@@ -40,18 +40,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "getAccountInfo": {
         "type": "function",
         "name": "getAccountInfo",
-        "description": "Fetch detailed account information for a specified cryptocurrency, including available balance, global trading funds data (e.g., margin, valuation, unrealized P&L), related trade history, and all open orders.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "Asset symbol, e.g., DOGE, ETH, BTC, TRUMP.",
-                },
-            },
-            "required": ["symbol"],
-            "additionalProperties": False,
-        },
+        "description": "Fetch account information from the virtual exchange: balances, margin summary, and open orders (with oid). Returns clearinghouse state including account value and current positions.",
+        "parameters": { "type": "object", "properties": {}, "additionalProperties": False },
     },
     "getKlineIndicators": {
         "type": "function",
@@ -99,49 +89,60 @@ TOOL_SCHEMAS["rescheduleMeeting"] = {
     }
 }
 
-# ---- Append trading tools (stream pushers for KrakenTradingSpot) ----
-TOOL_SCHEMAS["addOrder"] = {
+TOOL_SCHEMAS["placeOrder"] = {
     "type": "function",
-    "name": "addOrder",
-    "description": "Create a new trade plan (spot only) and enqueue it to the trading stream for execution by KrakenTradingSpot.",
+    "name": "placeOrder",
+    "description": "Place a new order on the virtual exchange with required stop-loss and take-profit orders (OCO format). Supports market orders (limit_px=0) and limit orders. Returns order ID (oid) for tracking. When either SL or TP triggers, the other will be automatically cancelled.",
     "parameters": {
         "type": "object",
         "properties": {
-            "symbol": {"type": "string", "description": "Kraken altname, e.g., XBTUSD, ETHUSD."},
-            "side": {"type": "string", "enum": ["buy", "sell"], "description": "Order side."},
-            "entry_price": {"type": "number", "description": "Entry price. For market orders, ignored."},
-            "position_size": {"type": "number", "description": "Base asset size, e.g., 0.001."},
-            "stop_loss_price": {"type": "number", "description": "Stop-loss trigger price."},
-            "take_profits": {"type": "array", "description": "TP ladder (1–2 items). Percentages sum to 100.",
-                "items": {"type": "object", "properties": {
-                    "price": {"type": "number", "description": "TP price."},
-                    "percentage_to_sell": {"type": "number", "minimum": 1, "maximum": 100, "description": "Sell percentage (1–100)."}
-                }, "required": ["price", "percentage_to_sell"], "additionalProperties": False}
+            "coin": {
+                "type": "string",
+                "description": "Trading pair base asset, e.g., 'BTC', 'ETH', 'XBT'. The system will automatically append 'USDT' to form the pair."
             },
-            "entry_ordertype": {"type": "string", "enum": ["market", "limit"], "default": "market", "description": "Entry order type."},
-            "post_only": {"type": "boolean", "description": "Post-only for limit orders (maker-only). Maps to Kraken oflags 'post'."},
-            "userref": {"type": "integer", "description": "Optional user grouping tag. If omitted, executor will assign one."}
+            "is_buy": {
+                "type": "boolean",
+                "description": "True for buy orders, false for sell orders."
+            },
+            "sz": {
+                "type": "number",
+                "description": "Order size in base asset units, e.g., 0.1 BTC."
+            },
+            "limit_px": {
+                "type": "number",
+                "description": "Limit price. Set to 0 for market orders. For limit orders, specify the desired execution price."
+            },
+            "stop_loss": {
+                "type": "object",
+                "description": "Required stop-loss order configuration. OCO: if this triggers, take-profit will be cancelled.",
+                "properties": {
+                    "price": {
+                        "type": "number",
+                        "description": "Stop-loss trigger price. For buy orders, should be below entry price. For sell orders, should be above entry price."
+                    }
+                },
+                "required": ["price"],
+                "additionalProperties": False
+            },
+            "take_profit": {
+                "type": "object",
+                "description": "Required take-profit order configuration. OCO: if this triggers, stop-loss will be cancelled.",
+                "properties": {
+                    "price": {
+                        "type": "number",
+                        "description": "Take-profit trigger price. For buy orders, should be above entry price. For sell orders, should be below entry price."
+                    }
+                },
+                "required": ["price"],
+                "additionalProperties": False
+            },
+            "reduce_only": {
+                "type": "boolean",
+                "description": "If true, order can only reduce position size. Defaults to false.",
+                "default": False
+            }
         },
-        "required": ["symbol", "side", "entry_price", "position_size", "stop_loss_price", "take_profits"],
-        "additionalProperties": False
-    }
-}
-
-TOOL_SCHEMAS["amendOrder"] = {
-    "type": "function",
-    "name": "amendOrder",
-    "description": "Amend an existing trade PRICES ONLY. Quantity/position_size cannot be amended. If order_id is provided, will attempt to amend the live exchange order (entry limit or stop-loss). If trade_id is provided, will amend ledger (stop-loss/TPs; entry price only when PENDING). To change size, first cancel (by order_id or trade_id) and then add a new order. Providing both identifiers is recommended to ensure one-shot consistency.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "order_id": {"type": "string", "description": "Kraken order txid. Use entry order_id to change entry limit; use SL order_id to change stop-loss trigger."},
-            "trade_id": {"type": "string", "description": "Internal trade identifier from ledger. Ensures ledger (SL/TPs) is updated even if exchange amend is not possible yet."},
-            "new_entry_price": {"type": "number", "description": "New entry price (only for unfilled entry limit orders)."},
-            "new_stop_loss_price": {"type": "number", "description": "New stop-loss trigger. If SL not created yet, updates ledger and will sync on creation."},
-            "new_tp1_price": {"type": "number", "description": "New TP1 price (ledger only; strategy does not pre-place TP orders)."},
-            "new_tp2_price": {"type": "number", "description": "New TP2 price (ledger only). If trade has only one TP, TP2 will NOT be auto-created."}
-        },
-        "required": [],
+        "required": ["coin", "is_buy", "sz", "limit_px", "stop_loss", "take_profit"],
         "additionalProperties": False
     }
 }
@@ -149,14 +150,20 @@ TOOL_SCHEMAS["amendOrder"] = {
 TOOL_SCHEMAS["cancelOrder"] = {
     "type": "function",
     "name": "cancelOrder",
-    "description": "Cancel an order or an entire trade. With order_id, cancels that single live order (entry or SL) and, if it is the last open order (or SL with remaining_size=0), closes and deletes the ledger. With trade_id, cancels associated open orders and deletes the trade record.",
+    "description": "Cancel an existing order by order ID (oid). The oid is returned when placing an order via placeOrder.",
     "parameters": {
         "type": "object",
         "properties": {
-            "order_id": {"type": "string", "description": "Kraken order txid to cancel (entry or stop-loss)."},
-            "trade_id": {"type": "string", "description": "Ledger trade id. Will attempt to cancel associated open orders and delete the trade record."}
+            "coin": {
+                "type": "string",
+                "description": "Trading pair base asset, e.g., 'BTC', 'ETH', 'XBT'. Must match the coin used when placing the order."
+            },
+            "oid": {
+                "type": "string",
+                "description": "Order ID (transaction ID) returned from placeOrder. Use this to cancel the specific order."
+            }
         },
-        "required": [],
+        "required": ["coin", "oid"],
         "additionalProperties": False
     }
 }

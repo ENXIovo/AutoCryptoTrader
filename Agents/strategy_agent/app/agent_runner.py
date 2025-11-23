@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import redis
+import requests
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional
@@ -16,6 +17,7 @@ from .gpt_client import GPTClient
 from .scheduler import Scheduler
 from .tool_schemas import TOOL_SCHEMAS
 from .tool_handlers import TOOL_HANDLERS
+from .tool_router import DataClient
 from .models import MessageRequest
 
 EXECUTOR = ThreadPoolExecutor(max_workers=8)
@@ -37,35 +39,156 @@ def _store_analysis_results(report_data: Dict[str, Any]) -> None:
     - 使用 Redis Stream（XADD），天然按时间有序，便于按最新读取
     - 键名由 settings.analysis_results_stream_key 指定
     """
-    # 选用与你 Celery 一致的 Redis，优先 result_backend，没有就用 broker
-    r = redis.Redis.from_url(settings.redis_url)
-    ts = datetime.now(timezone.utc).isoformat()
+    print(f"[Storage] Redis URL: {settings.redis_url}")
+    print(f"[Storage] Stream Key: {settings.analysis_results_stream_key}")
+    
     try:
-        payload = json.dumps(report_data, ensure_ascii=False)
-    except TypeError:
-        payload = json.dumps(
-            {k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
-             for k, v in report_data.items()},
-            ensure_ascii=False
-        )
-    # 写入 Stream，自动按时间有序，支持 MAXLEN 修剪
-    try:
-        maxlen = int(getattr(settings, "analysis_results_stream_maxlen", 0))
-    except Exception:
-        maxlen = 0
-    xadd_kwargs = {}
-    if maxlen and maxlen > 0:
-        xadd_kwargs["maxlen"] = maxlen
-        xadd_kwargs["approximate"] = True  # 使用近似修剪以提高性能
+        # 选用与你 Celery 一致的 Redis
+        print(f"[Storage] 正在连接Redis...")
+        r = redis.Redis.from_url(settings.redis_url, decode_responses=True, socket_connect_timeout=5)
+        
+        # 测试连接
+        r.ping()
+        print(f"[Storage] ✅ Redis连接成功")
+        
+        ts = datetime.now(timezone.utc).isoformat()
+        print(f"[Storage] 时间戳: {ts}")
+        
+        try:
+            payload = json.dumps(report_data, ensure_ascii=False)
+            print(f"[Storage] Payload大小: {len(payload)} 字符")
+        except TypeError as e:
+            print(f"[Storage] ⚠️ JSON序列化失败，使用fallback: {e}")
+            payload = json.dumps(
+                {k: v if isinstance(v, (str, int, float, bool, list, dict, type(None))) else str(v)
+                 for k, v in report_data.items()},
+                ensure_ascii=False
+            )
+        
+        # 写入 Stream，自动按时间有序，支持 MAXLEN 修剪
+        try:
+            maxlen = int(getattr(settings, "analysis_results_stream_maxlen", 0))
+            print(f"[Storage] MaxLen: {maxlen}")
+        except Exception:
+            maxlen = 0
+            
+        xadd_kwargs = {}
+        if maxlen and maxlen > 0:
+            xadd_kwargs["maxlen"] = maxlen
+            xadd_kwargs["approximate"] = True  # 使用近似修剪以提高性能
 
-    r.xadd(
-        name=settings.analysis_results_stream_key,
-        fields={
-            "ts": ts,
-            "payload": payload,
-        },
-        **xadd_kwargs,
-    )
+        print(f"[Storage] 正在写入Redis Stream...")
+        entry_id = r.xadd(
+            name=settings.analysis_results_stream_key,
+            fields={
+                "ts": ts,
+                "payload": payload,
+            },
+            **xadd_kwargs,
+        )
+        
+        print(f"✅ 会议结果已存储到Redis Stream '{settings.analysis_results_stream_key}' (ID: {entry_id})")
+        
+        # 验证存储
+        stream_info = r.xinfo_stream(settings.analysis_results_stream_key)
+        print(f"[Storage] ✅ 验证: Stream长度 = {stream_info.get('length', 0)}")
+        
+    except redis.exceptions.ConnectionError as e:
+        print(f"❌ Redis连接失败: {e}")
+        print(f"   Redis URL: {settings.redis_url}")
+        print(f"   请检查Redis服务是否运行，以及URL是否正确")
+        raise
+    except redis.exceptions.TimeoutError as e:
+        print(f"❌ Redis连接超时: {e}")
+        raise
+    except Exception as e:
+        print(f"❌ 存储会议结果失败: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+# --- Helper: attach a concise userref snapshot for CTO/Executor ---
+def _build_userref_snapshot() -> str:
+    """
+    Fetch Clearinghouse State (Account Info) and format for Agent context.
+    Shows Balance and Open Orders.
+    """
+    try:
+        # We use the requests logic similar to tool_handler but inline here for context building
+        resp = requests.post(f"{settings.trading_url.rstrip('/')}/info", json={"type": "clearinghouseState"}, timeout=5)
+        resp.raise_for_status()
+        state = resp.json()
+        
+        # Format Balance
+        margin = state.get("marginSummary", {})
+        balance_str = f"Account Equity: ${margin.get('accountValue', '0.0')}"
+        
+        # Format Open Orders
+        open_orders = state.get("openOrders", [])
+        if not open_orders:
+            orders_str = "(No Open Orders)"
+        else:
+            lines = []
+            for o in open_orders:
+                # o: {oid, coin, side, limitPx, sz}
+                side = "BUY" if o.get("side") == "B" else "SELL"
+                lines.append(f"- {o.get('coin')} {side} {o.get('sz')} @ {o.get('limitPx')} (oid: {o.get('oid')})")
+            orders_str = "Open Orders:\n" + "\n".join(lines)
+        
+        return f"{balance_str}\n\n{orders_str}"
+    except Exception as e:
+        return f"Account Snapshot Unavailable: {e}"
+
+
+# --- Helper: attach last_price snapshot from DataCollector for CTO ---
+def _build_last_price_snapshot() -> str:
+    try:
+        dc = DataClient(settings.data_service_url)
+        symbols = get_trade_universe()
+        lines: list[str] = []
+        
+        def _candidate_data_symbols(sym: str) -> list[str]:
+            s = str(sym).upper().strip()
+            bases: list[str]
+            if s in ("BTC", "XBT"):
+                bases = ["XBT", "BTC"]
+            else:
+                bases = [s]
+            candidates: list[str] = []
+            for b in bases:
+                candidates.append(f"{b}USD")
+            # 去重，保持顺序
+            seen: set[str] = set()
+            uniq: list[str] = []
+            for c in candidates:
+                if c not in seen:
+                    seen.add(c)
+                    uniq.append(c)
+            return uniq
+        for sym in symbols:
+            try:
+                last = None
+                for query_sym in _candidate_data_symbols(sym):
+                    try:
+                        data = dc.getKlineIndicators(query_sym)
+                        last = (
+                            ((data or {}).get("common_info") or {})
+                            .get("ticker", {})
+                            .get("last_price")
+                        )
+                        if last is not None:
+                            break
+                    except Exception:
+                        continue
+                if last is not None:
+                    lines.append(f"- {sym}: last_price={last}")
+            except Exception:
+                continue
+        if not lines:
+            return "No last_price snapshot available."
+        return "Live Ticker (last_price only):\n" + "\n".join(lines)
+    except Exception:
+        return "Live Ticker snapshot unavailable."
+
 
 
 # REMOVED: 本地的 _get_trade_universe 函数已被删除，因为它现在从 config.py 导入
@@ -77,17 +200,47 @@ async def _analyze_agent(
     system_message_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     scheduler = _build_scheduler(agent_cfg["tools"])
-    msg_req = MessageRequest(
-        message=user_message,
-        system_message=system_message_override or agent_cfg["prompt"],
-        deployment_name=agent_cfg["deployment_name"],
-    )
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(EXECUTOR, scheduler.analyze, msg_req)
+
+    primary_deployment = agent_cfg.get("deployment_name")
+    fallback_order = [
+        "gpt-5-mini",
+        "gpt-5-nano",
+    ]
+
+    async def _call(deployment_name: str) -> Dict[str, Any]:
+        req = MessageRequest(
+            message=user_message,
+            system_message=system_message_override or agent_cfg["prompt"],
+            deployment_name=deployment_name,
+        )
+        return await loop.run_in_executor(EXECUTOR, scheduler.analyze, req)
+
+    last_err: Exception | None = None
+    # Try primary once, with 30s timeout set in GPTClient
+    try:
+        return await _call(primary_deployment)
+    except Exception as e:
+        last_err = e
+
+    # Sequential fallbacks: mini -> nano, each only once
+    for fb in fallback_order:
+        if fb == primary_deployment:
+            continue
+        try:
+            return await _call(fb)
+        except Exception as e2:
+            last_err = e2
+
+    # Final fallback: return an error-shaped response to avoid crashing the meeting
+    return {
+        "content": f"[ERROR] Agent '{agent_cfg.get('name')}' failed after retries and fallback. Last error: {last_err}",
+        "error": str(last_err) if last_err else "unknown",
+    }
 
 async def run_agents_in_sequence_async() -> Dict[str, Any]:
     """
-    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO -> Trade Executor。
+    新版：并行 News/多份 TA；随后串行 PM -> Risk -> CTO（CTO 直接执行工具）。
     """
     print("--- Starting Trading Strategy Meeting (New Workflow) ---")
 
@@ -105,7 +258,6 @@ async def run_agents_in_sequence_async() -> Dict[str, Any]:
     ta_cfg = cfg_by_name.get("Lead Technical Analyst")
     risk_cfg = cfg_by_name.get("Risk Manager")
     cto_cfg = cfg_by_name.get("Chief Trading Officer")
-    trade_exec_cfg = cfg_by_name.get("Trade Executor")
 
     # ------------------ MODIFIED: STAGE 1 (Parallel Base Analysis) ------------------
     # 只运行不互相依赖的基础分析师
@@ -199,6 +351,11 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
             f"Baseline cadence remains every 4h at :05 UTC. If you do not call it, the next meeting occurs at the default time above.\n"
         )
 
+        # Attach userref snapshot for decision context
+        final_context_for_cto += f"\n\n## Userref Snapshot\n{_build_userref_snapshot()}\n"
+        # Attach last price snapshot for limit-order validation guidance
+        final_context_for_cto += f"\n\n## Live Ticker\n{_build_last_price_snapshot()}\n"
+
         cto_result = await _analyze_agent(
             cto_cfg,
             user_message=f"{final_context_for_cto}{scheduling_note}\n\n# Your Task:\nMake the final decision and provide an actionable plan.",
@@ -206,26 +363,21 @@ Propose a clear action plan, including any dynamic adjustments based on the new 
         final_reports["Chief Trading Officer"] = cto_result
         print(f"[Chief Trading Officer] responded:\n{cto_result.get('content','')}\n")
 
-    # ------------------ NEW: STAGE 5 (Sequential Trade Executor) ------------------
-    # 由执行官根据 CTO 的结构化计划实际调用交易工具（cancel/amend/add）
-    if trade_exec_cfg and "Chief Trading Officer" in final_reports:
-        exec_context = full_context
-        exec_context += f"\n\n## Report from Chief Trading Officer:\n{final_reports['Chief Trading Officer'].get('content','')}"
-
-        trade_exec_result = await _analyze_agent(
-            trade_exec_cfg,
-            user_message=f"{exec_context}\n\n# Your Task:\nExecute the CTO's structured plan exactly. Respect strict ordering: cancels -> amends -> adds.",
-        )
-        final_reports["Trade Executor"] = trade_exec_result
-        print(f"[Trade Executor] responded:\n{trade_exec_result.get('content','')}\n")
+    # Stage 5 removed: CTO executes directly with tools
 
 
     print("--- Trading Strategy Meeting Ended ---")
 
+    # 存储会议结果
+    print(f"[Storage] 准备存储会议结果到Redis Stream '{settings.analysis_results_stream_key}'...")
     try:
         _store_analysis_results(final_reports)
+        print(f"[Storage] ✅ 存储成功")
     except Exception as e:
-        print(f"Failed to store analysis results: {e}")
+        print(f"[Storage] ❌ 存储失败: {e}")
+        import traceback
+        traceback.print_exc()
+        # 不抛出异常，避免影响会议结果的返回
 
     return final_reports
 

@@ -1,0 +1,12 @@
+services:
+
+  virtual-exchange:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: exchange-base
+    container_name: virtual-exchange
+    ports:
+      - "8100:8100"
+    restart: unless-stopped

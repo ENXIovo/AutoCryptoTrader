@@ -1,0 +1,12 @@
+services:
+
+  hyperliquid-exchange:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: exchange-base
+    container_name: hyperliquid-exchange
+    ports:
+      - "8200:8200"
+    restart: unless-stopped

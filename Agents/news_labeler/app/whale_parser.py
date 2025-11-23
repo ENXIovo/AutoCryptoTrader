@@ -39,8 +39,14 @@ def _to_float(s: str) -> float:
     except Exception:
         return 0.0
 
-def _importance_by_usd(usd: float) -> float:
-    # 只看美元金额，简单阶梯即可；按需改阈值
+def _importance_by_usd(usd: float, is_routine: bool = False) -> float:
+    # 策略：Stablecoin 铸造/销毁/国库流转 -> 大幅降权，除非金额巨大
+    if is_routine:
+        if usd >= 1_000_000_000: return 0.85  # 10亿才算大事
+        if usd >= 500_000_000:   return 0.75  # 5亿
+        return 0.40  # 其他一律低分
+
+    # 正常交易 (转账/砸盘/买入)
     if usd >= 300_000_000:  # ≥$300m
         return 0.95
     if usd >= 100_000_000:
@@ -49,20 +55,14 @@ def _importance_by_usd(usd: float) -> float:
         return 0.80
     if usd >= 20_000_000:
         return 0.70
-    if usd >= 5_000_000:
-        return 0.55
-    if usd >= 1_000_000:
-        return 0.40
-    return 0.30
+    
+    return 0.40 # 提高门槛，几百万的别推了
 
-@dataclass
-class WhaleResult:
-    ok: bool
-    category: list[str]      # 固定 ['whale_transaction']
-    importance: float
-    durability: str          # 固定 'hours'
-    summary: str             # 原文（轻清洗）
-    confidence: float        # 有美元估值就给高置信
+def _is_routine_operation(text: str) -> bool:
+    """检测是否为 Mint/Burn/Treasury 等例行操作"""
+    t = text.lower()
+    keywords = ["minted", "burned", "treasury", "reserve"]
+    return any(k in t for k in keywords)
 
 def _unknown_factor(line: str) -> tuple[float, int]:
     """根据 'unknown' 出现次数返回惩罚系数与计数。"""
@@ -72,6 +72,15 @@ def _unknown_factor(line: str) -> tuple[float, int]:
     if n == 1:
         return 0.8, 1
     return 0.6, n  # 2 个及以上
+
+@dataclass
+class WhaleResult:
+    ok: bool
+    category: list[str]      # 固定 ['whale_transaction']
+    importance: float
+    durability: str          # 固定 'hours'
+    summary: str             # 原文（轻清洗）
+    confidence: float        # 有美元估值就给高置信
 
 def parse_whale_fixed(text: str) -> Optional[WhaleResult]:
     if not text:
@@ -90,7 +99,11 @@ def parse_whale_fixed(text: str) -> Optional[WhaleResult]:
 
     symbol = m.group("symbol").upper()
     usd = _to_float(m.group("usd"))
-    importance = _importance_by_usd(usd)
+    
+    # 判定是否 routine
+    is_routine = _is_routine_operation(line)
+    
+    importance = _importance_by_usd(usd, is_routine)
     confidence = 0.9 if usd > 0 else 0.7
 
     # ★ 新增：根据 unknown 次数下调重要度
@@ -100,8 +113,8 @@ def parse_whale_fixed(text: str) -> Optional[WhaleResult]:
     summary = line
 
     logger.info(
-        "[whale.simple] ok symbol=%s usd=%.2f importance=%.2f (unknown_cnt=%d factor=%.2f) confidence=%.2f",
-        symbol, usd, importance, unk_cnt, factor, confidence
+        "[whale.simple] ok symbol=%s usd=%.2f importance=%.2f (routine=%s unknown_cnt=%d factor=%.2f) confidence=%.2f",
+        symbol, usd, importance, is_routine, unk_cnt, factor, confidence
     )
 
     return WhaleResult(

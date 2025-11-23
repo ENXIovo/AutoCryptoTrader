@@ -5,6 +5,7 @@ pydantic_settings
 requests
 uvicorn
 pandas
+pyarrow
 celery[redis]
 celery[celery-beat]
 pymysql

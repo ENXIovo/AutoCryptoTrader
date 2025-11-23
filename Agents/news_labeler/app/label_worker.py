@@ -17,29 +17,6 @@ from .utils.redis_utils import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("news_labeler.worker")
 
-# =============== 倍率规则（来源/分类） ===============
-def _source_factor(source: str) -> float:
-    s = (source or "").strip().lower()
-    for k, v in settings.source_factor_map.items():
-        if k in s:
-            return v
-    return 0.8
-
-def _category_factor(categories) -> float:
-    if not categories:
-        return 1.0
-    if isinstance(categories, str):
-        cats = [c.strip().lower() for c in categories.split(",") if c.strip()]
-    else:
-        cats = [str(c).strip().lower() for c in categories if str(c).strip()]
-    if not cats:
-        return 1.0
-    factors = [settings.category_factor_map.get(c, 1.0) for c in cats]
-    up = max([f for f in factors if f >= 1.0], default=1.0)
-    down = min([f for f in factors if f < 1.0], default=1.0)
-    return up * down
-
-# ====================================================
 
 def _decode(v: bytes | None) -> str:
     return v.decode() if isinstance(v, (bytes, bytearray)) else (v or "")
@@ -53,10 +30,10 @@ def _is_whale_source(source: str) -> bool:
 def _handle_gpt(r, client: GPTClient, group: str, msg_id: str, key: str,
                 text: str, source: str, ts: str, label_version="gpt"):
     label = client.label_news(text)  # 失败抛异常
-    base_weight = compute_weight(label.importance, label.durability, ts)
-    mult_src = _source_factor(source)
-    mult_cat = _category_factor(label.category)
-    weight = base_weight * mult_src * mult_cat
+    
+    # 纯粹使用 GPT 的判断 + 时间衰减，不再乘以来源/分类系数
+    # 我们信任 GPT 对内容重要性的理解
+    weight = compute_weight(label.importance, label.durability, ts)
 
     save_label_to_redis(r, key, {
         "category": ",".join(label.category),
@@ -67,8 +44,8 @@ def _handle_gpt(r, client: GPTClient, group: str, msg_id: str, key: str,
         "source": source, "ts": ts, "label_version": label_version,
     }, weight)
     xack(r, group, msg_id)
-    logger.info("[process][gpt] saved & acked id=%s key=%s ver=%s base=%.6f src=%.2f cat=%.2f final=%.6f",
-                msg_id, key, label_version, base_weight, mult_src, mult_cat, weight)
+    logger.info("[process][gpt] saved & acked id=%s key=%s ver=%s final=%.6f",
+                msg_id, key, label_version, weight)
 
 # ================== 分离：WHALE ==================
 def _handle_whale(r, client: GPTClient, group: str, msg_id: str, key: str,
@@ -76,10 +53,10 @@ def _handle_whale(r, client: GPTClient, group: str, msg_id: str, key: str,
     logger.info("[process][whale] source=%s", source)
     whale = parse_whale_fixed(text)  # 不匹配返回 None
     if whale and whale.ok:
-        base_weight = compute_weight(whale.importance, whale.durability, ts)
-        mult_src = _source_factor(source)
-        mult_cat = _category_factor(whale.category) if settings.apply_category_for_whale else 1.0
-        weight = base_weight * mult_src * mult_cat
+        # Whale 逻辑保持原样，或者也统一？
+        # 既然用户要求去掉 base 权重，Whale 解析通常比较死板，
+        # 建议也去掉外部系数，只保留解析出的 importance
+        weight = compute_weight(whale.importance, whale.durability, ts)
 
         save_label_to_redis(r, key, {
             "category": ",".join(whale.category),  # ['whale_transaction']
@@ -90,8 +67,8 @@ def _handle_whale(r, client: GPTClient, group: str, msg_id: str, key: str,
             "source": source, "ts": ts, "label_version": "whale-fixed",
         }, weight)
         xack(r, group, msg_id)
-        logger.info("[process][whale] saved & acked id=%s key=%s base=%.6f src=%.2f final=%.6f",
-                    msg_id, key, base_weight, mult_src, weight)
+        logger.info("[process][whale] saved & acked id=%s key=%s final=%.6f",
+                    msg_id, key, weight)
         return
 
     # 解析失败 → 直接丢给 GPT 分支
@@ -114,10 +91,14 @@ def _process_one(r, client: GPTClient, group: str, msg_id: str, fields: dict):
     logger.info("[process] id=%s src=%s key=%s", msg_id, source, key)
 
     try:
+        # 临时封杀 WhaleAlert 以减少噪音 (M0阶段)
         if _is_whale_source(source):
-            _handle_whale(r, client, group, msg_id, key, text, source, ts)
-        else:
-            _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
+            logger.info("[process] skipping whale source %s", source)
+            xack(r, group, msg_id)  # 即使跳过也要ACK，否则会一直堆积
+            return
+        
+        # 非 whale source：使用 GPT 处理
+        _handle_gpt(r, client, group, msg_id, key, text, source, ts, label_version="gpt")
     except Exception as e:
         logger.exception("[process] failed id=%s key=%s: %s", msg_id, key, e)
         # 不 ACK，留给重试
